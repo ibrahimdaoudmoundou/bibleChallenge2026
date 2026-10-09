@@ -1,0 +1,2 @@
+Ancienne version (Google Apps Script + Google Sheets).
+Conservée uniquement comme solution de secours : l'application officielle est celle de ce dossier (Vercel + Supabase).
