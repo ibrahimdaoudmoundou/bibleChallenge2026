@@ -30,7 +30,7 @@ export function Toast({ message, onClose }) {
 }
 
 // Fenêtre qui monte du bas sur téléphone, centrée sur ordinateur
-export function Sheet({ open, onClose, title, children }) {
+export function Sheet({ open, onClose, title, children, wide = false }) {
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => e.key === 'Escape' && onClose();
@@ -40,7 +40,7 @@ export function Sheet({ open, onClose, title, children }) {
   if (!open) return null;
   return (
     <div className="sheet-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="sheet" role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`sheet ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="sheet-head">
           <h2>{title}</h2>
           <button className="icon-btn" onClick={onClose} aria-label="Fermer"><Icon name="close" /></button>
