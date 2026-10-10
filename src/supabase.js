@@ -13,7 +13,7 @@ export async function rpc(fn, args = {}) {
     try {
       const { data, error } = await supabase.rpc(fn, args);
       if (error) {
-        if (error.code) throw Object.assign(new Error(error.message), { fatal: true });
+        if (error.code) throw Object.assign(new Error(error.message), { fatal: true, code: error.code });
         throw new Error(error.message || 'réseau');
       }
       return data;
@@ -25,6 +25,12 @@ export async function rpc(fn, args = {}) {
   }
   throw last;
 }
+
+// Fonction absente de la base (mise à jour SQL pas encore faite) : on revient à l'ancienne fonction
+export const isMissingFn = (e) => Boolean(e && (e.code === 'PGRST202' || e.code === '42883'));
+
+// Hors connexion : on n'attend pas les nouvelles tentatives
+export const isOffline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
 
 export const safeGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 export const safeSet = (k, v) => { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch { /* ignoré */ } };

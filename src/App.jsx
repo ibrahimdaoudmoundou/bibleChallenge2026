@@ -1,6 +1,10 @@
+import { lazy, Suspense } from 'react';
 import Participant from './participant/Participant.jsx';
-import Admin from './admin/Admin.jsx';
 import { configured } from './supabase.js';
+import { Loading } from './ui/kit.jsx';
+
+// L'administration est chargée à part : les participants ne téléchargent pas son code
+const Admin = lazy(() => import('./admin/Admin.jsx'));
 
 export default function App() {
   if (!configured) {
@@ -15,6 +19,6 @@ export default function App() {
     );
   }
   const seg = window.location.pathname.split('/').filter(Boolean)[0] || '';
-  if (seg === 'admin') return <Admin />;
+  if (seg === 'admin') return <Suspense fallback={<div className="solo"><Loading /></div>}><Admin /></Suspense>;
   return <Participant slug={seg.toLowerCase()} />;
 }
