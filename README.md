@@ -43,6 +43,21 @@ du participant figure aussi dans ce menu. Vous pouvez joindre les PDF à vos mes
 
 ---
 
+## Mise à jour v2 (à faire une fois)
+
+Supabase > **SQL Editor** > New query > coller `supabase/migration_v2.sql` > **Run**.
+Le script ne fait que des ajouts (rien n'est supprimé) et peut être relancé sans danger. Il apporte :
+
+- **Participants** : pays, ville et nombre de participations précédentes (facultatifs) ; ajout d'un participant et saisie de ses rapports par un administrateur (fiche de suivi).
+- **Suivi** : filtres (statut, pays, ville, participations, origine), tris (plus avancés, plus réguliers…), **podium** avec message WhatsApp prêt à envoyer.
+- **Exports** PDF, Excel et CSV (liste filtrée, rapports sur une période, statistiques, fiche d'un participant, historique).
+- **Statistiques** avec diagrammes (activité par jour, avancement, pays, villes).
+- **Historique** : qui a fait quoi dans l'administration.
+- **Page publique** : texte « L'histoire du challenge » et photo modifiables dans `/admin > Page publique`, annonce affichée chez tous les participants.
+- **Hors connexion** : le rapport est gardé sur le téléphone et envoyé automatiquement au retour d'Internet (sans doublon).
+
+Le site fonctionne aussi avant l'exécution du script : les nouvelles fonctions affichent simplement un rappel.
+
 ## Étape 1 — Supabase (base de données)
 
 1. Créez un compte sur **supabase.com**, puis **New project** (nom `challenge-bible`, région la plus proche, notez le mot de passe de la base).
