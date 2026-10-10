@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { supabase, rpc, formatDate } from '../supabase.js';
-import { reminderText, waLink, morningText, eveningText, waShare, needsReminder } from '../../shared/messages.js';
+import { supabase, rpc, formatDate, isMissingFn } from '../supabase.js';
+import { waLink, morningText, eveningText, waShare, needsReminder } from '../../shared/messages.js';
 import { Icon, Brand } from '../ui/icons.jsx';
-import { Chip, STATUS, Toast, Field, Loading } from '../ui/kit.jsx';
+import { STATUS, Toast, Field, Loading } from '../ui/kit.jsx';
+import { Credit } from '../ui/credit.jsx';
+import { Columns, Bars } from './charts.jsx';
+import { Participants, ExportButtons, V2Notice } from './participants.jsx';
+import { exportTable } from './exports.js';
+import { dayKey, groupCount, pct, SORTS, place, ACTIONS, detailText, resizeImage } from './util.js';
 
 const NAV = [
   { id: 'dash', label: 'Tableau de bord', icon: 'dashboard' },
   { id: 'part', label: 'Participants', icon: 'users' },
   { id: 'quest', label: 'Questions', icon: 'chat' },
+  { id: 'public', label: 'Page publique', icon: 'globe' },
+  { id: 'hist', label: 'Historique', icon: 'history' },
   { id: 'sess', label: 'Sessions', icon: 'sliders' },
 ];
 
@@ -39,6 +46,7 @@ export default function Admin() {
           <h1>Accès réservé</h1>
           <p className="muted">Le compte <b>{session.user.email}</b> n'est pas administrateur de ce challenge. Demandez à la personne qui gère le site de l'ajouter.</p>
           <button className="btn quiet" onClick={logout}><Icon name="logout" /> Changer de compte</button>
+          <Credit />
         </div>
       </div>
     );
@@ -55,7 +63,11 @@ function Login() {
     e.preventDefault();
     setErr(''); setBusy(true);
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pw });
-    if (error) setErr('E-mail ou mot de passe incorrect.');
+    if (error) {
+      setErr(/fetch|network/i.test(error.message || '')
+        ? 'Pas de connexion Internet. Vérifiez votre réseau puis réessayez.'
+        : 'E-mail ou mot de passe incorrect.');
+    }
     setBusy(false);
   };
   return (
@@ -67,6 +79,7 @@ function Login() {
         <Field label="Mot de passe"><input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" /></Field>
         {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
         <button className="btn primary" disabled={busy}>{busy ? 'Connexion…' : 'Me connecter'}</button>
+        <Credit />
       </form>
     </div>
   );
@@ -77,7 +90,10 @@ function Panel({ email, logout }) {
   const [cid, setCid] = useState('');
   const [tab, setTab] = useState('dash');
   const [filter, setFilter] = useState('');
+  const [preset, setPreset] = useState(null);
   const [summary, setSummary] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [v2, setV2] = useState(true);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const closeToast = useCallback(() => setToast(''), []);
@@ -96,14 +112,19 @@ function Panel({ email, logout }) {
     const sm = r.summary;
     if (!sm.challenge.platform_url) sm.challenge.platform_url = `${window.location.origin}/${sm.challenge.slug}`;
     if (sm.challenge.plan_url && sm.challenge.plan_url.startsWith('/')) sm.challenge.plan_url = window.location.origin + sm.challenge.plan_url;
+    try { const i = await rpc('api_info', { p_slug: sm.challenge.slug }); sm.portions = i.portions || []; } catch { sm.portions = []; }
     setSummary(sm);
+    try {
+      const st = await rpc('admin_stats', { p_cid: cid });
+      setStats(st.ok ? st : null); setV2(true);
+    } catch (e) { setStats(null); if (isMissingFn(e)) setV2(false); }
   }, [cid]);
 
   useEffect(() => { loadChallenges().catch(() => setError('Connexion difficile.')); }, [loadChallenges]);
-  useEffect(() => { setSummary(null); loadSummary().catch(() => setError('Connexion difficile.')); }, [loadSummary]);
+  useEffect(() => { setSummary(null); setStats(null); loadSummary().catch(() => setError('Connexion difficile. Vérifiez votre réseau puis rechargez la page.')); }, [loadSummary]);
 
   const current = challenges.find((c) => c.id === cid);
-  const goParticipants = (status) => { setFilter(status || ''); setTab('part'); };
+  const goParticipants = (status, extra = null) => { setFilter(status || ''); setPreset(extra ? { ...extra, t: Date.now() } : null); setTab('part'); };
 
   return (
     <div className="admin">
@@ -127,15 +148,19 @@ function Panel({ email, logout }) {
         <div className="side-foot">
           <span title={email}>{email}</span>
           <button className="textlink" onClick={logout}><Icon name="logout" size={15} /> Déconnexion</button>
+          <Credit dark />
         </div>
       </aside>
 
       <main className="admin-main">
         {error ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{error}</p></div> : null}
-        {tab === 'dash' ? <Dash s={summary} toast={setToast} goParticipants={goParticipants} /> : null}
-        {tab === 'part' ? <Participants s={summary} reload={loadSummary} filter={filter} setFilter={setFilter} /> : null}
+        {tab === 'dash' ? <Dash s={summary} stats={stats} v2={v2} toast={setToast} goParticipants={goParticipants} /> : null}
+        {tab === 'part' ? <Participants s={summary} v2={v2} reload={loadSummary} filter={filter} setFilter={setFilter} preset={preset} toast={setToast} /> : null}
         {tab === 'quest' ? <Questions cid={cid} reload={loadSummary} /> : null}
+        {tab === 'public' ? <PublicPage s={summary} v2={v2} reload={loadSummary} toast={setToast} /> : null}
+        {tab === 'hist' ? <History cid={cid} v2={v2} s={summary} /> : null}
         {tab === 'sess' ? <Sessions challenges={challenges} current={current} reload={loadChallenges} setCid={setCid} toast={setToast} /> : null}
+        <Credit />
       </main>
       <Toast message={toast} onClose={closeToast} />
     </div>
@@ -147,12 +172,36 @@ const SEGMENTS = [
   ['retard', 'var(--brique)'], ['aucun', '#aab2cc'], ['pas_commence', '#d5daea'],
 ];
 
-const dayKey = (date, tz) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+const BUCKETS = [[0, 0, '0 %'], [1, 24, '1 – 24 %'], [25, 49, '25 – 49 %'], [50, 74, '50 – 74 %'], [75, 99, '75 – 99 %'], [100, 100, '100 % (Bible lue)']];
 
-function Dash({ s, toast, goParticipants }) {
+function Dash({ s, stats, v2, toast, goParticipants }) {
+  const [metric, setMetric] = useState('reports');
+  const days = useMemo(() => {
+    if (!s || !stats) return [];
+    const c = s.challenge;
+    const by = Object.fromEntries((stats.reports_by_day || []).map((d) => [d.day, d]));
+    const sig = Object.fromEntries((stats.signups_by_day || []).map((d) => [d.day, d.n]));
+    const start = new Date(`${c.start_date}T12:00:00`);
+    const firstData = [...Object.keys(by), ...Object.keys(sig)].sort()[0];
+    const from = firstData && new Date(`${firstData}T12:00:00`) < start ? new Date(`${firstData}T12:00:00`) : start;
+    const today = new Date(`${dayKey(new Date(), c.timezone)}T12:00:00`);
+    const end = new Date(Math.min(today, new Date(start.getTime() + (c.total_days + 3) * 864e5)));
+    const out = [];
+    for (let d = new Date(from); d <= end && out.length < 120; d.setDate(d.getDate() + 1)) {
+      const k = d.toISOString().slice(0, 10);
+      const x = by[k] || {};
+      const label = d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+      const v = metric === 'reports' ? x.reports || 0 : metric === 'people' ? x.people || 0 : metric === 'chapters' ? x.chapters || 0 : sig[k] || 0;
+      const unitTxt = { reports: 'rapport(s)', people: 'personne(s) active(s)', chapters: 'chapitre(s) lus', signups: 'inscription(s)' }[metric];
+      out.push({ key: k, label, value: v, title: `${label} : ${v} ${unitTxt}` });
+    }
+    return out;
+  }, [s, stats, metric]);
+
   if (!s) return <Loading />;
   const ps = s.participants;
   const c = s.challenge;
+  const total = s.total_chapters || 1;
   const count = (k) => ps.filter((p) => p.statut === k).length;
   const lus = ps.reduce((a, p) => a + p.chap_lus, 0);
   const prog = ps.length && s.total_chapters ? (100 * lus) / (ps.length * s.total_chapters) : 0;
@@ -170,12 +219,31 @@ function Dash({ s, toast, goParticipants }) {
     ['Progression globale', `${prog.toFixed(1)} %`], ['À relancer', toRemind], ['Questions en attente', s.questions_pending],
   ];
   const messages = [['Annonce du matin', morningText(s)], ['Bilan du soir', eveningText(s)]];
+  const buckets = BUCKETS.map(([a, b, label]) => ({ label, value: ps.filter((p) => { const x = pct(p, total); return x >= a && x <= b; }).length }));
+  const countries = groupCount(ps, (p) => p.country);
+  const cities = groupCount(ps, (p) => p.city).slice(0, 8);
+  const noPlace = ps.filter((p) => !String(p.country || '').trim()).length;
+  const top3 = [...ps].sort(SORTS.avance.cmp).filter((p) => p.chap_lus > 0).slice(0, 3);
+
+  const exportStats = (format) => exportTable({
+    format, title: `Statistiques — ${c.name}`, subtitle: jourTxt,
+    columns: [{ header: 'Indicateur', get: (r) => r[0], width: 36 }, { header: 'Valeur', get: (r) => r[1], width: 16 }],
+    rows: [
+      ['Participants inscrits', ps.length], ...figures,
+      ...SEGMENTS.map(([k]) => [`Statut : ${STATUS[k].label}`, count(k)]),
+      ...buckets.map((b) => [`Avancement ${b.label}`, b.value]),
+      ...countries.map((x) => [`Pays : ${x.label}`, x.value]),
+      ...groupCount(ps, (p) => p.city).map((x) => [`Ville : ${x.label}`, x.value]),
+      ...(stats?.reports_by_day || []).map((d) => [`Rapports du ${new Date(`${d.day}T12:00`).toLocaleDateString('fr-FR')}`, d.reports]),
+    ],
+    filename: `statistiques-${c.slug}`,
+  });
 
   return (
     <>
-      <header className="head">
-        <h1>{c.name}</h1>
-        <p className="muted">{jourTxt}</p>
+      <header className="head head-row">
+        <div><h1>{c.name}</h1><p className="muted">{jourTxt}</p></div>
+        <ExportButtons onExport={exportStats} label="Statistiques" />
       </header>
 
       <section className="panel">
@@ -200,6 +268,51 @@ function Dash({ s, toast, goParticipants }) {
         {figures.map(([l, v]) => <div key={l}><dt>{l}</dt><dd>{v}</dd></div>)}
       </dl>
 
+      {top3.length ? (
+        <section className="panel">
+          <div className="panel-head"><h2>Les plus avancés</h2>
+            <button className="mini gold" onClick={() => goParticipants('', { sort: 'avance', podium: true })}><Icon name="trophy" size={15} /> Podium et message</button>
+          </div>
+          <ol className="podium compact">
+            {top3.map((p, i) => (
+              <li key={p.id} className={`pod-${i + 1}`}>
+                <span className="pod-medal" aria-hidden="true">{['🥇', '🥈', '🥉'][i]}</span>
+                <span className="pod-name"><b>{p.name}</b><small>{place(p) || p.code}</small></span>
+                <span className="pod-value">{SORTS.avance.value(p, total)}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Activité par jour</h2>
+          <select className="compact-select" value={metric} onChange={(e) => setMetric(e.target.value)} aria-label="Indicateur">
+            <option value="reports">Rapports envoyés</option>
+            <option value="people">Personnes actives</option>
+            <option value="chapters">Chapitres lus</option>
+            <option value="signups">Inscriptions</option>
+          </select>
+        </div>
+        {!v2 ? <V2Notice /> : <Columns data={days} empty="Aucune activité pour l'instant." />}
+      </section>
+
+      <div className="panels2">
+        <section className="panel">
+          <div className="panel-head"><h2>Avancement dans la Bible</h2><span className="muted small">en % des chapitres</span></div>
+          <Bars items={buckets} />
+        </section>
+        <section className="panel">
+          <div className="panel-head"><h2>Participants par pays</h2>{noPlace ? <span className="muted small">{noPlace} sans pays</span> : null}</div>
+          <Bars items={countries} empty="Aucun pays renseigné pour l'instant." onPick={(d) => goParticipants('', { country: d.key })} />
+        </section>
+        <section className="panel">
+          <div className="panel-head"><h2>Villes principales</h2></div>
+          <Bars items={cities} empty="Aucune ville renseignée pour l'instant." />
+        </section>
+      </div>
+
       <section className="panel">
         <div className="panel-head"><h2>Messages WhatsApp du jour</h2></div>
         <p className="muted small">Les mêmes textes arrivent par e-mail aux administrateurs. Lisez-les ici, puis copiez-les ou ouvrez-les dans WhatsApp.</p>
@@ -220,72 +333,151 @@ function Dash({ s, toast, goParticipants }) {
   );
 }
 
-function Participants({ s, reload, filter, setFilter }) {
-  const [q, setQ] = useState('');
-  const [busy, setBusy] = useState('');
-  const list = useMemo(() => {
-    if (!s) return [];
-    const needle = q.trim().toLowerCase();
-    const digits = needle.replace(/\D/g, '');
-    return s.participants.filter((p) =>
-      (!filter || p.statut === filter) &&
-      (!needle || p.name.toLowerCase().includes(needle) || p.code.toLowerCase().includes(needle) || (digits && p.phone.includes(digits))));
-  }, [s, q, filter]);
-  if (!s) return <Loading />;
-  const total = s.total_chapters || 1;
+/* ------------------------------------------------------------------ historique */
+function History({ cid, v2, s }) {
+  const [list, setList] = useState(null);
+  const [who, setWho] = useState('');
+  const [what, setWhat] = useState('');
+  useEffect(() => {
+    if (!cid || !v2) { setList([]); return; }
+    setList(null);
+    rpc('admin_logs', { p_cid: cid, p_limit: 1000 }).then((r) => setList(r.list || [])).catch(() => setList([]));
+  }, [cid, v2]);
+  const admins = useMemo(() => [...new Set((list || []).map((l) => l.admin_email).filter(Boolean))].sort(), [list]);
+  const shown = (list || []).filter((l) => (!who || l.admin_email === who) && (!what || l.action === what));
+  const doExport = (format) => exportTable({
+    format, title: `Historique — ${s?.challenge?.name || ''}`, subtitle: `${shown.length} action(s)${who ? ` · ${who}` : ''}`,
+    columns: [
+      { header: 'Date', get: (l) => new Date(l.created_at).toLocaleString('fr-FR'), width: 18, pdfWidth: 100 },
+      { header: 'Administrateur', get: (l) => l.admin_email, width: 30, pdfWidth: 150 },
+      { header: 'Action', get: (l) => ACTIONS[l.action] || l.action, width: 32, pdfWidth: 140 },
+      { header: 'Détails', get: (l) => detailText(l.details), width: 60 },
+    ],
+    rows: shown, filename: 'historique',
+  });
+  return (
+    <>
+      <header className="head head-row">
+        <div><h1>Historique</h1><p className="muted">Qui a fait quoi, et quand, dans l'administration.</p></div>
+        {v2 ? <ExportButtons onExport={doExport} /> : null}
+      </header>
+      {!v2 ? <V2Notice /> : null}
+      {v2 ? (
+        <div className="filters">
+          <select value={who} onChange={(e) => setWho(e.target.value)} aria-label="Administrateur">
+            <option value="">Tous les administrateurs</option>
+            {admins.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+          <select value={what} onChange={(e) => setWhat(e.target.value)} aria-label="Type d'action">
+            <option value="">Toutes les actions</option>
+            {Object.entries(ACTIONS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </div>
+      ) : null}
+      {list === null ? <Loading /> : shown.length === 0 ? (v2 ? <p className="muted empty-line">Aucune action enregistrée pour l'instant. Les prochaines actions des administrateurs apparaîtront ici.</p> : null) : (
+        <ol className="timeline">
+          {shown.map((l) => (
+            <li key={l.id}>
+              <time dateTime={l.created_at}>{new Date(l.created_at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</time>
+              <div>
+                <p><b>{l.admin_email || 'Inconnu'}</b> · {ACTIONS[l.action] || l.action}</p>
+                {detailText(l.details) ? <p className="small muted">{detailText(l.details)}</p> : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </>
+  );
+}
 
-  const resetPin = async (p) => {
-    if (!window.confirm(`Effacer le code secret de ${p.name} ?`)) return;
-    setBusy(p.id); await rpc('admin_reset_pin', { p_participant: p.id }); await reload(); setBusy('');
+/* ------------------------------------------------------------------ page publique */
+function PublicPage({ s, v2, reload, toast }) {
+  const [story, setStory] = useState(null);
+  const [ann, setAnn] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState('');
+  const cid = s?.challenge?.id;
+
+  useEffect(() => {
+    if (!cid || !v2) return;
+    setStory(null);
+    rpc('admin_story', { p_cid: cid }).then((r) => setStory(r.ok ? r : { title: '', body: '', photo: '' })).catch(() => setStory({ title: '', body: '', photo: '' }));
+    setAnn(s?.challenge?.announcement || '');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cid, v2]);
+
+  if (!s) return <Loading />;
+  if (!v2) return (<><header className="head"><h1>Page publique</h1></header><V2Notice /></>);
+  if (!story) return <Loading />;
+
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { setErr('Choisissez une image (photo JPEG ou PNG).'); return; }
+    try { setErr(''); setStory({ ...story, photo: await resizeImage(file) }); } catch { setErr('Impossible de lire cette image.'); }
   };
-  const remove = async (p) => {
-    if (!window.confirm(`Supprimer ${p.name} et tous ses rapports ? Cette action est définitive.`)) return;
-    setBusy(p.id); await rpc('admin_delete_participant', { p_participant: p.id }); await reload(); setBusy('');
+  const saveStory = async (e) => {
+    e.preventDefault(); setErr(''); setBusy('story');
+    try {
+      const r = await rpc('admin_save_story', { p_cid: cid, p: { title: story.title, body: story.body, photo: story.photo } });
+      if (r.error) setErr(r.error); else toast('Page publique enregistrée.');
+    } catch { setErr('Connexion difficile. Réessayez.'); }
+    setBusy('');
   };
-  const exportCsv = () => {
-    const head = ['Code', 'Nom', 'Téléphone', 'Statut', 'Chapitres lus', 'Retard (chapitres)', 'Dernier rapport'];
-    const rows = s.participants.map((p) => [p.code, p.name, p.phone, STATUS[p.statut].label, p.chap_lus, p.retard, p.dernier_rapport || '']);
-    const csv = [head, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(';')).join('\n');
-    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }));
-    const a = document.createElement('a'); a.href = url; a.download = `participants-${s.challenge.slug}.csv`; a.click(); URL.revokeObjectURL(url);
+  const saveAnn = async (text) => {
+    setErr(''); setBusy('ann');
+    try {
+      const r = await rpc('admin_save_announcement', { p_cid: cid, p_text: text });
+      if (r.error) setErr(r.error); else { setAnn(text); toast(text ? 'Annonce publiée.' : 'Annonce retirée.'); await reload(); }
+    } catch { setErr('Connexion difficile. Réessayez.'); }
+    setBusy('');
   };
+  const paragraphs = String(story.body || '').split(/\n\s*\n/).filter((x) => x.trim());
 
   return (
     <>
-      <header className="head"><h1>Participants</h1><p className="muted">{list.length} affiché{list.length > 1 ? 's' : ''} sur {s.participants.length}</p></header>
-      <div className="toolbar">
-        <label className="search"><Icon name="search" size={18} /><input placeholder="Nom, numéro ou code" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Rechercher" /></label>
-        <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filtrer par statut">
-          <option value="">Tous les statuts</option>
-          {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        </select>
-        <button className="mini" onClick={exportCsv}><Icon name="download" size={15} /> Exporter</button>
-      </div>
-      {list.length === 0 ? <p className="muted empty-line">Aucun participant ne correspond à cette recherche.</p> : (
-        <div className="tablewrap">
-          <table className="table">
-            <thead><tr><th>Participant</th><th>Statut</th><th>Lecture</th><th>Prochaine portion</th><th><span className="sr">Actions</span></th></tr></thead>
-            <tbody>
-              {list.map((p) => (
-                <tr key={p.id}>
-                  <td><b>{p.name}</b><small>{p.code} · +{p.phone}</small></td>
-                  <td><Chip status={p.statut} /></td>
-                  <td className="read">
-                    <div className="mini-meter"><i style={{ width: `${Math.min(100, (100 * p.chap_lus) / total)}%` }} /></div>
-                    <small>{p.chap_lus} ch.{p.retard > 0 ? `, retard ${p.retard}` : ''}</small>
-                  </td>
-                  <td className="next-cell">{p.next ? `P${p.next.n}, ${p.next.label}` : '—'}</td>
-                  <td className="row-actions">
-                    <a className="icon-btn wa" href={waLink(p.phone, reminderText(p, s))} target="_blank" rel="noreferrer" title="Relancer sur WhatsApp" aria-label={`Relancer ${p.name} sur WhatsApp`}><Icon name="send" size={18} /></a>
-                    {p.protected ? <button className="icon-btn" disabled={busy === p.id} onClick={() => resetPin(p)} title="Effacer le code secret" aria-label={`Effacer le code de ${p.name}`}><Icon name="key" size={18} /></button> : null}
-                    <button className="icon-btn danger" disabled={busy === p.id} onClick={() => remove(p)} title="Supprimer" aria-label={`Supprimer ${p.name}`}><Icon name="trash" size={18} /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <header className="head head-row">
+        <div><h1>Page publique</h1><p className="muted">Ce que voient les visiteurs et les participants.</p></div>
+        <a className="mini" href={`/${s.challenge.slug}`} target="_blank" rel="noreferrer"><Icon name="external" size={15} /> Voir la page</a>
+      </header>
+      {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
+
+      <section className="panel">
+        <div className="panel-head"><h2>Annonce aux participants</h2>{s.challenge.announcement ? <span className="chip ok"><i />En ligne</span> : <span className="chip mute"><i />Aucune</span>}</div>
+        <p className="muted small">S'affiche en haut de l'application de chaque participant (et sur la page d'accueil) jusqu'à ce que vous la retiriez. Idéal pour un rappel, un encouragement ou un changement de programme.</p>
+        <Field label="Texte de l'annonce"><textarea className="short" value={ann} maxLength={1000} onChange={(e) => setAnn(e.target.value)} placeholder="Ex. : Demain est un jour de rattrapage. Courage à tous !" /></Field>
+        <div className="fiche-actions">
+          <button className="btn primary fit" disabled={busy === 'ann' || !ann.trim()} onClick={() => saveAnn(ann.trim())}><Icon name="bell" /> Publier l'annonce</button>
+          {s.challenge.announcement ? <button className="btn quiet fit" disabled={busy === 'ann'} onClick={() => saveAnn('')}>Retirer l'annonce</button> : null}
         </div>
-      )}
+      </section>
+
+      <form className="panel" onSubmit={saveStory}>
+        <div className="panel-head"><h2>L'histoire du challenge</h2>{story.updated_by ? <span className="muted small">Modifié par {story.updated_by}</span> : null}</div>
+        <Field label="Titre"><input value={story.title} maxLength={120} onChange={(e) => setStory({ ...story, title: e.target.value })} /></Field>
+        <Field label="Texte" hint="Laissez une ligne vide entre deux paragraphes. Laissez le texte vide pour masquer ce bloc.">
+          <textarea className="tall" value={story.body} maxLength={8000} onChange={(e) => setStory({ ...story, body: e.target.value })} />
+        </Field>
+        <div className="photo-edit">
+          {story.photo ? <img src={story.photo} alt="Aperçu de la photo" /> : <span className="photo-empty"><Icon name="image" size={28} /></span>}
+          <div className="stack-tight">
+            <span className="field-label">Photo (facultatif)</span>
+            <span className="field-hint">Par exemple une photo de sœur Mary. Elle est réduite automatiquement pour rester légère.</span>
+            <label className="mini file-pick"><Icon name="image" size={15} /> {story.photo ? 'Changer la photo' : 'Choisir une photo'}<input type="file" accept="image/*" onChange={pick} /></label>
+            {story.photo ? <button type="button" className="mini" onClick={() => setStory({ ...story, photo: '' })}><Icon name="trash" size={15} /> Retirer la photo</button> : null}
+          </div>
+        </div>
+        <button className="btn primary fit" disabled={busy === 'story'}>{busy === 'story' ? 'Enregistrement…' : 'Enregistrer la page'}</button>
+
+        <h3 className="fiche-h">Aperçu</h3>
+        <div className="story preview">
+          {story.photo ? <img className="story-photo" src={story.photo} alt="" /> : null}
+          {story.title ? <h2>{story.title}</h2> : null}
+          {paragraphs.map((x, i) => <p key={i}>{x}</p>)}
+        </div>
+      </form>
     </>
   );
 }
