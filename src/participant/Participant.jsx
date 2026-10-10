@@ -1,8 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
-import { rpc, safeGet, safeSet } from '../supabase.js';
+import { rpc, safeGet, safeSet, isMissingFn, isOffline } from '../supabase.js';
 import { Icon, Brand, Lamp } from '../ui/icons.jsx';
 import { Chip, Toast, Sheet, Field, Loading, addDays, longDate, initials } from '../ui/kit.jsx';
 import { InstallCard, InstallButton } from '../ui/install.jsx';
+import { Credit } from '../ui/credit.jsx';
+import { enqueue, flushOutbox, readOutbox, readDraft, saveDraft, sendReport, uuid } from './outbox.js';
+
+const OFFLINE_MSG = 'Vous n\'êtes pas connecté à Internet.';
+const readJSON = (k) => { try { return JSON.parse(safeGet(k) || 'null'); } catch { return null; } };
+const writeJSON = (k, v) => { try { safeSet(k, v ? JSON.stringify(v) : null); } catch { /* stockage plein */ } };
+
+// Suit l'état de la connexion du téléphone
+function useOnline() {
+  const [on, setOn] = useState(() => !isOffline());
+  useEffect(() => {
+    const up = () => setOn(true), down = () => setOn(false);
+    window.addEventListener('online', up); window.addEventListener('offline', down);
+    return () => { window.removeEventListener('online', up); window.removeEventListener('offline', down); };
+  }, []);
+  return on;
+}
 
 const TABS = [
   { id: 'today', label: 'Aujourd\'hui', icon: 'sun' },
@@ -28,6 +45,11 @@ export default function Participant({ slug }) {
   const [toast, setToast] = useState('');
   const [preset, setPreset] = useState(null);
   const [menu, setMenu] = useState(false);
+  const [storyOpen, setStoryOpen] = useState(false);
+  const [loginNotice, setLoginNotice] = useState('');
+  const [pending, setPending] = useState(0);
+  const [fromCache, setFromCache] = useState(false);
+  const online = useOnline();
 
   const tokenKey = info ? `cb_token_${info.slug}` : '';
   const token = () => (tokenKey ? safeGet(tokenKey) : null);
@@ -36,34 +58,84 @@ export default function Participant({ slug }) {
   useEffect(() => {
     (async () => {
       try {
+        if (isOffline()) throw new Error('offline');
         const i = await rpc('api_info', { p_slug: slug });
         if (!i.ok) { setFatal(i.error || 'Challenge introuvable.'); return; }
         setInfo(i);
+        writeJSON(`cb_info_${slug || 'index'}`, i);
         document.title = i.name;
+        setPending(readOutbox(i.slug).length);
         const t = safeGet(`cb_token_${i.slug}`);
         if (t) {
           const r = await rpc('api_profile', { p_token: t });
-          if (r.ok) { setProfile(r.profile); setScreen('today'); return; }
+          if (r.ok) { setProfile(r.profile); writeJSON(`cb_profile_${i.slug}`, r.profile); setScreen('today'); return; }
           safeSet(`cb_token_${i.slug}`, null);
+          setLoginNotice('Votre session a expiré. Reconnectez-vous avec votre numéro WhatsApp pour continuer.');
+          setScreen('login');
+          return;
         }
         setScreen('welcome');
       } catch {
-        setFatal('La connexion est difficile. Vérifiez votre réseau, puis rechargez la page.');
+        // Hors connexion : on ouvre l'application avec les dernières informations enregistrées sur le téléphone
+        const i = readJSON(`cb_info_${slug || 'index'}`);
+        if (!i) { setFatal(`${OFFLINE_MSG} Connectez-vous (données mobiles ou Wi-Fi), puis rechargez la page.`); return; }
+        setInfo(i); setFromCache(true);
+        document.title = i.name;
+        setPending(readOutbox(i.slug).length);
+        const prof = safeGet(`cb_token_${i.slug}`) ? readJSON(`cb_profile_${i.slug}`) : null;
+        if (prof) { setProfile(prof); setScreen('today'); } else setScreen('welcome');
       }
     })();
   }, [slug]);
 
+  // Envoi automatique des rapports gardés sur le téléphone, dès que la connexion revient
+  useEffect(() => {
+    if (!info || !online) return undefined;
+    const run = async () => {
+      if (!readOutbox(info.slug).length) { setPending(0); return; }
+      const r = await flushOutbox(info.slug);
+      setPending(readOutbox(info.slug).length);
+      if (r.profile) { setProfile(r.profile); writeJSON(`cb_profile_${info.slug}`, r.profile); }
+      if (r.sent) setToast(r.sent > 1 ? `${r.sent} rapports en attente ont été envoyés. Merci !` : 'Votre rapport en attente a été envoyé. Merci !');
+      if (r.failed?.length) setToast(`Un rapport n'a pas pu être enregistré : ${r.failed[0]}`);
+      if (r.needLogin) { setLoginNotice('Reconnectez-vous avec votre numéro pour envoyer le rapport gardé sur ce téléphone.'); }
+    };
+    run();
+    const t = setInterval(run, 45000);
+    return () => clearInterval(t);
+  }, [info, online]);
+
+  // De retour en ligne après une ouverture hors connexion : on rafraîchit les données
+  useEffect(() => {
+    if (!online || !fromCache || !info) return;
+    (async () => {
+      try {
+        const i = await rpc('api_info', { p_slug: slug });
+        if (i.ok) { setInfo(i); writeJSON(`cb_info_${slug || 'index'}`, i); setFromCache(false); }
+        const t = safeGet(`cb_token_${i.slug}`);
+        if (t) { const r = await rpc('api_profile', { p_token: t }); if (r.ok) { setProfile(r.profile); writeJSON(`cb_profile_${i.slug}`, r.profile); } }
+      } catch { /* toujours hors connexion */ }
+    })();
+  }, [online, fromCache, info, slug]);
+
   const enter = (tok, prof, message = '') => {
     safeSet(tokenKey, tok);
     setProfile(prof);
+    writeJSON(`cb_profile_${info.slug}`, prof);
+    setLoginNotice('');
     if (message) setToast(message);
-    setScreen('today');
+    setScreen(readDraft(info.slug) ? 'report' : 'today');
   };
-  const logout = () => { safeSet(tokenKey, null); setProfile(null); setMenu(false); setScreen('welcome'); };
-  const lostSession = () => { safeSet(tokenKey, null); setProfile(null); setScreen('login'); };
+  const logout = () => { safeSet(tokenKey, null); writeJSON(`cb_profile_${info.slug}`, null); setProfile(null); setMenu(false); setScreen('welcome'); };
+  const lostSession = () => {
+    safeSet(tokenKey, null); setProfile(null);
+    setLoginNotice('Votre session a expiré. Reconnectez-vous avec votre numéro WhatsApp : votre rapport en cours est gardé et vous le retrouverez juste après.');
+    setScreen('login');
+  };
+  const updateProfile = (prof) => { setProfile(prof); writeJSON(`cb_profile_${info.slug}`, prof); };
   const openReport = (n) => { setPreset(n || null); setScreen('report'); };
 
-  if (fatal) return <div className="solo"><div className="notice bad"><Icon name="help" /> <p>{fatal}</p></div></div>;
+  if (fatal) return <div className="solo"><div className="notice bad"><Icon name={isOffline() ? 'wifioff' : 'help'} /> <p>{fatal}</p></div></div>;
   if (screen === 'loading') return <div className="solo"><Loading /></div>;
 
   const inApp = profile && TABS.some((t) => t.id === screen);
@@ -78,17 +150,32 @@ export default function Participant({ slug }) {
       ) : null}
 
       <main className="content">
+        {!online ? (
+          <div className="notice offline" role="status">
+            <Icon name="wifioff" />
+            <p><b>{OFFLINE_MSG}</b> Vous pouvez quand même écrire votre rapport : il sera gardé sur ce téléphone et envoyé automatiquement dès le retour de la connexion.</p>
+          </div>
+        ) : null}
+        {pending > 0 ? (
+          <div className="notice pending" role="status">
+            <Icon name="clock" />
+            <p><b>{pending > 1 ? `${pending} rapports en attente d'envoi.` : '1 rapport en attente d\'envoi.'}</b> {online ? 'Envoi en cours…' : 'Il partira tout seul dès que vous serez connecté. Rouvrez simplement l\'application.'}</p>
+          </div>
+        ) : null}
+        {screen !== 'report' ? <Announcement info={info} /> : null}
         {screen === 'welcome' ? <Welcome info={info} go={setScreen} /> : null}
         {screen === 'signup' ? <Signup info={info} go={setScreen} onDone={enter} /> : null}
-        {screen === 'login' ? <Login info={info} go={setScreen} onDone={enter} /> : null}
+        {screen === 'login' ? <Login info={info} go={setScreen} onDone={enter} notice={loginNotice} /> : null}
         {screen === 'today' && profile ? <Today info={info} p={profile} openReport={openReport} /> : null}
         {screen === 'trail' && profile ? <Trail info={info} p={profile} openReport={openReport} /> : null}
         {screen === 'reports' && profile ? <Reports token={token()} openReport={openReport} lost={lostSession} /> : null}
         {screen === 'report' && profile ? (
           <ReportForm info={info} p={profile} token={token()} preset={preset} back={() => setScreen('today')} lost={lostSession}
-            onDone={(p) => { setProfile(p); setToast('Rapport enregistré. Que Dieu bénisse votre lecture.'); setScreen('today'); }} />
+            onDone={(p) => { updateProfile(p); setToast('Rapport enregistré. Que Dieu bénisse votre lecture.'); setScreen('today'); }}
+            onQueued={(n) => { setPending(n); setToast('Rapport gardé sur ce téléphone. Il sera envoyé automatiquement dès le retour d\'Internet.'); setScreen('today'); }} />
         ) : null}
         {!inApp && screen !== 'report' && info.signature ? <footer className="signature">{info.signature}</footer> : null}
+        {screen !== 'report' ? <Credit /> : null}
       </main>
 
       {inApp ? (
@@ -109,6 +196,8 @@ export default function Participant({ slug }) {
               <span className="avatar big">{initials(profile.name)}</span>
               <div><b>{profile.name}</b><span>Identifiant {profile.code}</span><span>{profile.phone ? `+${profile.phone}` : ''}</span></div>
             </div>
+            <MyInfo info={info} p={profile} token={token()} onSaved={(p) => { updateProfile(p); setToast('Informations enregistrées.'); }} lost={() => { setMenu(false); lostSession(); }} />
+            <button className="btn quiet" onClick={() => { setMenu(false); setStoryOpen(true); }}><Icon name="heart" /> L'histoire du challenge</button>
             {info.plan_url ? <a className="btn quiet" href={info.plan_url} target="_blank" rel="noreferrer"><Icon name="file" /> Plan de lecture</a> : null}
             <a className="btn quiet" href="/Guide_participant_Challenge_Bible_40j.pdf" target="_blank" rel="noreferrer"><Icon name="file" /> Guide du participant</a>
             <InstallButton />
@@ -116,7 +205,91 @@ export default function Participant({ slug }) {
           </>
         ) : null}
       </Sheet>
+      <Sheet open={storyOpen} onClose={() => setStoryOpen(false)} title="L'histoire du challenge">
+        <Story slug={info.slug} bare />
+      </Sheet>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ annonce des administrateurs */
+function Announcement({ info }) {
+  const k = `cb_ann_${info.slug}`;
+  const [hidden, setHidden] = useState(() => safeGet(k));
+  const text = String(info.announcement || '').trim();
+  if (!text || hidden === String(info.announcement_at)) return null;
+  return (
+    <div className="announce" role="status">
+      <Icon name="bell" />
+      <div><b>Annonce</b><p>{text}</p></div>
+      <button className="icon-btn" onClick={() => { safeSet(k, String(info.announcement_at)); setHidden(String(info.announcement_at)); }} aria-label="Masquer l'annonce"><Icon name="close" size={18} /></button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ l'histoire du challenge */
+function Story({ slug, bare = false }) {
+  const k = `cb_story_${slug}`;
+  const [st, setSt] = useState(() => readJSON(k));
+  useEffect(() => {
+    rpc('api_story', { p_slug: slug })
+      .then((r) => { if (r.ok) { setSt(r); writeJSON(k, r); } })
+      .catch(() => { /* base pas encore à jour ou hors connexion : on garde la version enregistrée */ });
+  }, [slug, k]);
+  if (!st || !String(st.body || '').trim()) return bare ? <p className="muted">Bientôt disponible.</p> : null;
+  const paragraphs = String(st.body).split(/\n\s*\n/).filter((x) => x.trim());
+  return (
+    <section className={`story ${bare ? 'bare' : ''}`} aria-label={st.title || 'Histoire du challenge'}>
+      {st.photo ? <img className="story-photo" src={st.photo} alt="Photo illustrant l'histoire du challenge" loading="lazy" /> : null}
+      {st.title && !bare ? <h2>{st.title}</h2> : null}
+      {paragraphs.map((x, i) => <p key={i}>{x}</p>)}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ mes informations (facultatives) */
+function MyInfo({ info, p, token, onSaved, lost }) {
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ country: p.country || '', city: p.city || '', previous: p.previous_participations ?? '' });
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (p.country === undefined) return null; // base pas encore à jour
+  const set = (key) => (e) => setF({ ...f, [key]: e.target.value });
+  const save = async (e) => {
+    e.preventDefault(); setErr('');
+    if (isOffline()) return setErr(`${OFFLINE_MSG} Réessayez quand vous serez connecté.`);
+    setBusy(true);
+    try {
+      const r = await rpc('api_update_profile', { p_token: token, p_country: f.country, p_city: f.city, p_previous: f.previous === '' ? null : Number(f.previous) });
+      if (r.logged_out) return lost();
+      if (r.ok) { onSaved(r.profile); setOpen(false); }
+    } catch { setErr('La connexion est difficile. Réessayez dans un instant.'); }
+    setBusy(false);
+  };
+  if (!open) {
+    return <button className="btn quiet" onClick={() => setOpen(true)}><Icon name="globe" /> Mes informations{p.country || p.city ? ` (${[p.city, p.country].filter(Boolean).join(', ')})` : ''}</button>;
+  }
+  return (
+    <form className="myinfo" onSubmit={save} data-slug={info.slug}>
+      <p className="small muted">Facultatif : ces informations aident l'équipe à mieux vous accompagner.</p>
+      <OptionalFields f={f} set={set} />
+      {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
+      <button className="btn primary" disabled={busy}>{busy ? 'Enregistrement…' : 'Enregistrer'}</button>
+    </form>
+  );
+}
+
+function OptionalFields({ f, set }) {
+  return (
+    <>
+      <div className="two">
+        <Field label="Pays (facultatif)"><input value={f.country} onChange={set('country')} placeholder="Cameroun" autoComplete="country-name" /></Field>
+        <Field label="Ville / localité (facultatif)"><input value={f.city} onChange={set('city')} placeholder="Douala" autoComplete="address-level2" /></Field>
+      </div>
+      <Field label="Nombre de participations précédentes (facultatif)" hint="Combien de fois avez-vous déjà fait ce challenge ? Laissez vide si c'est la première fois.">
+        <input type="number" inputMode="numeric" min="0" max="100" value={f.previous} onChange={set('previous')} />
+      </Field>
+    </>
   );
 }
 
@@ -139,6 +312,7 @@ function Welcome({ info, go }) {
         <button className="btn primary" onClick={() => go('signup')}>Créer mon compte</button>
         <button className="btn quiet" onClick={() => go('login')}>J'ai déjà un compte</button>
       </div>
+      <Story slug={info.slug} />
       <InstallCard />
     </div>
   );
@@ -155,7 +329,8 @@ function Back({ onClick, title }) {
 
 /* ------------------------------------------------------------------ inscription */
 function Signup({ info, go, onDone }) {
-  const [f, setF] = useState({ nom: '', tel: '', pin: '', pin2: '', dep: 'at', livre: info.books[0] || '', chap: 1 });
+  const [f, setF] = useState({ nom: '', tel: '', pin: '', pin2: '', dep: 'at', livre: info.books[0] || '', chap: 1, country: '', city: '', previous: '' });
+  const [more, setMore] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -166,12 +341,20 @@ function Signup({ info, go, onDone }) {
     const pin = f.pin.trim();
     if (pin && !/^\d{4}$/.test(pin)) return setErr('Le code secret doit contenir 4 chiffres, ou rester vide.');
     if (pin && pin !== f.pin2.trim()) return setErr('Les deux codes ne sont pas identiques.');
+    if (isOffline()) return setErr(`${OFFLINE_MSG} La création du compte demande une connexion : réessayez dès que vous êtes connecté.`);
     setBusy(true);
     try {
-      const r = await rpc('api_signup', {
+      const base = {
         p_slug: info.slug, p_name: f.nom, p_phone: f.tel, p_pin: pin,
         p_start: f.dep, p_book: f.dep === 'ici' ? f.livre : null, p_chap: Number(f.chap) || 1,
-      });
+      };
+      let r;
+      try {
+        r = await rpc('api_signup_v2', { ...base, p_country: f.country, p_city: f.city, p_previous: f.previous === '' ? null : Number(f.previous) });
+      } catch (e2) {
+        if (!isMissingFn(e2)) throw e2;
+        r = await rpc('api_signup', base);
+      }
       if (r.error) setErr(r.error);
       else onDone(r.token, r.profile, pin
         ? 'Compte créé. Gardez bien votre code secret.'
@@ -219,6 +402,10 @@ function Signup({ info, go, onDone }) {
         </div>
       ) : null}
 
+      {more ? <OptionalFields f={f} set={set} /> : (
+        <button type="button" className="link" onClick={() => setMore(true)}><Icon name="plus" size={16} /> Ajouter mon pays, ma ville… (facultatif)</button>
+      )}
+
       {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
       <button className="btn primary" disabled={busy}>{busy ? 'Création en cours…' : 'Créer mon compte'}</button>
     </form>
@@ -226,7 +413,7 @@ function Signup({ info, go, onDone }) {
 }
 
 /* ------------------------------------------------------------------ connexion */
-function Login({ info, go, onDone }) {
+function Login({ info, go, onDone, notice = '' }) {
   const [tel, setTel] = useState('');
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
@@ -234,7 +421,9 @@ function Login({ info, go, onDone }) {
 
   const submit = async (e) => {
     e.preventDefault();
-    setErr(''); setBusy(true);
+    setErr('');
+    if (isOffline()) return setErr(`${OFFLINE_MSG} La connexion à votre compte demande Internet : réessayez dès que vous êtes connecté.`);
+    setBusy(true);
     try {
       const r = await rpc('api_login', { p_slug: info.slug, p_phone: tel, p_pin: pin });
       if (r.error) setErr(r.error); else onDone(r.token, r.profile);
@@ -245,6 +434,7 @@ function Login({ info, go, onDone }) {
   return (
     <form className="page" onSubmit={submit} noValidate>
       <Back onClick={() => go('welcome')} title="Me connecter" />
+      {notice ? <div className="notice" role="status"><Icon name="key" /> <p>{notice}</p></div> : null}
       <Field label="Numéro WhatsApp">
         <input type="tel" inputMode="tel" value={tel} onChange={(e) => setTel(e.target.value)} placeholder="+237 6 99 12 34 56" autoComplete="tel" />
       </Field>
@@ -438,18 +628,25 @@ function Reports({ token, openReport, lost }) {
 }
 
 /* ------------------------------------------------------------------ formulaire de rapport */
-function ReportForm({ info, p, token, preset, back, onDone, lost }) {
+function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
   const byN = Object.fromEntries(info.portions.map((x) => [x.n, x]));
-  const [portion, setPortion] = useState(preset || (p.next ? p.next.n : p.ordre[0]));
+  const draft = readDraft(info.slug);
+  const [portion, setPortion] = useState(draft?.portion && byN[draft.portion] ? draft.portion : preset || (p.next ? p.next.n : p.ordre[0]));
   const ch = byN[portion]?.chapters || 1;
   const deja = p.lect[portion] || 0;
   const reste = deja >= ch ? ch : ch - deja;
-  const [chap, setChap] = useState(String(reste));
-  const [f, setF] = useState({ verset: '', appris: '', appli: '', question: '' });
-  const [askQ, setAskQ] = useState(false);
+  const [chap, setChap] = useState(draft?.chap ? String(draft.chap) : String(reste));
+  const [f, setF] = useState(draft?.f || { verset: '', appris: '', appli: '', question: '' });
+  const [askQ, setAskQ] = useState(Boolean(draft?.f?.question));
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  // Brouillon gardé sur le téléphone pendant la saisie
+  useEffect(() => {
+    const empty = !f.verset.trim() && !f.appris.trim() && !f.appli.trim() && !f.question.trim();
+    saveDraft(info.slug, empty ? null : { portion, chap, f });
+  }, [info.slug, portion, chap, f]);
 
   const changePortion = (e) => {
     const n = Number(e.target.value);
@@ -462,15 +659,21 @@ function ReportForm({ info, p, token, preset, back, onDone, lost }) {
     e.preventDefault();
     setErr('');
     if (!f.verset.trim() || !f.appris.trim() || !f.appli.trim()) return setErr('Merci de remplir les trois premières cases.');
+    const payload = {
+      p_token: token, p_portion: portion, p_chapters: Number(chap),
+      p_verse: f.verset, p_learned: f.appris, p_application: f.appli, p_question: f.question, p_client_id: uuid(),
+    };
+    const queue = () => { const n = enqueue(info.slug, token, payload); saveDraft(info.slug, null); onQueued(n); };
+    if (isOffline()) return queue();
     setBusy(true);
     try {
-      const r = await rpc('api_report', {
-        p_token: token, p_portion: portion, p_chapters: Number(chap),
-        p_verse: f.verset, p_learned: f.appris, p_application: f.appli, p_question: f.question,
-      });
-      if (r.logged_out) return lost();
-      if (r.error) setErr(r.error); else onDone(r.profile);
-    } catch { setErr('La connexion est difficile. Réessayez : votre texte est conservé.'); }
+      const r = await sendReport(payload);
+      if (r.logged_out) { setBusy(false); return lost(); }
+      if (r.error) setErr(r.error); else { saveDraft(info.slug, null); onDone(r.profile); }
+    } catch (e2) {
+      if (e2?.fatal) setErr('Le rapport n\'a pas pu être enregistré. Réessayez dans un instant : votre texte est conservé.');
+      else { setBusy(false); return queue(); } // réseau coupé pendant l'envoi : on garde le rapport sur le téléphone
+    }
     setBusy(false);
   };
 
@@ -507,6 +710,7 @@ function ReportForm({ info, p, token, preset, back, onDone, lost }) {
         <button type="button" className="link" onClick={() => setAskQ(true)}><Icon name="plus" size={16} /> Poser une question sur ma lecture</button>
       )}
       {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
+      {isOffline() ? <p className="small muted offline-hint"><Icon name="wifioff" size={15} /> Hors connexion : en appuyant sur « Envoyer », le rapport sera gardé sur ce téléphone puis envoyé automatiquement.</p> : null}
       <div className="submitbar">
         <button className="btn primary" disabled={busy}><Icon name="send" /> {busy ? 'Envoi en cours…' : 'Envoyer mon rapport'}</button>
       </div>
