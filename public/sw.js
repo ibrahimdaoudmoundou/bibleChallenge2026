@@ -23,13 +23,13 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => { const copy = res.clone(); caches.open(CACHE).then((c) => c.put('/', copy)); return res; })
-        .catch(() => caches.match('/'))
+        .catch(() => caches.match('/', { ignoreVary: true }))
     );
     return;
   }
   // Fichiers du site (images, scripts, styles) : déjà en mémoire si possible
   e.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+    caches.match(req, { ignoreVary: true }).then((hit) => hit || fetch(req).then((res) => {
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
       return res;
     }))
