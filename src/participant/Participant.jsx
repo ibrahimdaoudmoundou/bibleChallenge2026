@@ -618,7 +618,7 @@ function Reports({ token, openReport, lost }) {
                 <b>{x.label || `Portion ${x.portion_n}`}</b>
                 <span>{fmt(x.created_at)}, {x.chapters} chapitre{x.chapters > 1 ? 's' : ''}</span>
               </div>
-              <blockquote>{x.verse}</blockquote>
+              {x.verse ? <blockquote>{x.verse}</blockquote> : null}
             </li>
           ))}
         </ol>
@@ -658,7 +658,6 @@ function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
   const submit = async (e) => {
     e.preventDefault();
     setErr('');
-    if (!f.verset.trim() || !f.appris.trim() || !f.appli.trim()) return setErr('Merci de remplir les trois premières cases.');
     const payload = {
       p_token: token, p_portion: portion, p_chapters: Number(chap),
       p_verse: f.verset, p_learned: f.appris, p_application: f.appli, p_question: f.question, p_client_id: uuid(),
@@ -699,9 +698,9 @@ function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
           {opts}
         </select>
       </Field>
-      <Field label="Le verset qui m'a marqué"><textarea value={f.verset} onChange={set('verset')} placeholder="Référence et texte du verset" /></Field>
-      <Field label="Ce que j'ai appris"><textarea value={f.appris} onChange={set('appris')} /></Field>
-      <Field label="Comment je vais l'appliquer"><textarea value={f.appli} onChange={set('appli')} /></Field>
+      <Field label="Le verset qui m'a marqué (facultatif)"><textarea value={f.verset} onChange={set('verset')} placeholder="Référence et texte du verset" /></Field>
+      <Field label="Ce que j'ai appris (facultatif)"><textarea value={f.appris} onChange={set('appris')} /></Field>
+      <Field label="Comment je vais l'appliquer (facultatif)"><textarea value={f.appli} onChange={set('appli')} /></Field>
       {askQ ? (
         <Field label="Ma question" hint="L'équipe répond dans le grand groupe.">
           <textarea className="short" value={f.question} onChange={set('question')} />
