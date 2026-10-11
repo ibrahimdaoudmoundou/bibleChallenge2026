@@ -295,7 +295,9 @@ function EditForm({ p, done }) {
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const save = async (e) => {
-    e.preventDefault(); setErr(''); setBusy(true);
+    e.preventDefault(); setErr('');
+    if (!f.country.trim() || !f.city.trim()) return setErr('Le pays et la ville sont obligatoires.');
+    setBusy(true);
     try {
       const r = await rpc('admin_update_participant', { p_participant: p.id, p: { ...f, previous: f.previous === '' ? '' : String(f.previous) } });
       if (r.error) setErr(r.error); else await done();
@@ -307,8 +309,8 @@ function EditForm({ p, done }) {
       <div className="grid2">
         <Field label="Nom et prénom"><input value={f.name} onChange={set('name')} /></Field>
         <Field label="Numéro WhatsApp"><input type="tel" value={f.phone} onChange={set('phone')} /></Field>
-        <Field label="Pays (facultatif)"><input value={f.country} onChange={set('country')} /></Field>
-        <Field label="Ville / localité (facultatif)"><input value={f.city} onChange={set('city')} /></Field>
+        <Field label="Pays (obligatoire)"><input value={f.country} onChange={set('country')} /></Field>
+        <Field label="Ville / localité (obligatoire)"><input value={f.city} onChange={set('city')} /></Field>
         <Field label="Participations précédentes (facultatif)"><input type="number" min="0" max="100" value={f.previous} onChange={set('previous')} /></Field>
       </div>
       {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
@@ -383,6 +385,7 @@ function AddParticipant({ open, s, close, reload, toast, done }) {
     e.preventDefault(); setErr('');
     if (f.name.trim().length < 3) return setErr('Indiquez le nom et le prénom.');
     if (f.phone.replace(/\D/g, '').length < 8) return setErr('Le numéro WhatsApp est obligatoire (8 chiffres au moins).');
+    if (!f.country.trim() || !f.city.trim()) return setErr('Le pays et la ville sont obligatoires.');
     setBusy(true);
     try {
       const r = await rpc('admin_add_participant', { p_cid: s.challenge.id, p: { ...f, previous: String(f.previous), chap: String(f.chap) } });
@@ -398,8 +401,8 @@ function AddParticipant({ open, s, close, reload, toast, done }) {
         <div className="grid2">
           <Field label="Nom et prénom"><input value={f.name} onChange={set('name')} /></Field>
           <Field label="Numéro WhatsApp (obligatoire)" hint="Avec l'indicatif du pays de préférence."><input type="tel" value={f.phone} onChange={set('phone')} placeholder="+237 6 99 12 34 56" /></Field>
-          <Field label="Pays (facultatif)"><input value={f.country} onChange={set('country')} placeholder="Cameroun" /></Field>
-          <Field label="Ville / localité (facultatif)"><input value={f.city} onChange={set('city')} placeholder="Douala" /></Field>
+          <Field label="Pays (obligatoire)"><input value={f.country} onChange={set('country')} placeholder="Cameroun" /></Field>
+          <Field label="Ville / localité (obligatoire)"><input value={f.city} onChange={set('city')} placeholder="Douala" /></Field>
           <Field label="Participations précédentes (facultatif)" hint="Nombre de fois où la personne a déjà fait le challenge."><input type="number" min="0" max="100" value={f.previous} onChange={set('previous')} /></Field>
           <Field label="Commence">
             <select value={f.start} onChange={set('start')}>
