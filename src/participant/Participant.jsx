@@ -37,6 +37,17 @@ function dueDay(info, k) {
   return null;
 }
 
+/* Le challenge a-t-il commencé ? (jour serveur, ou date du téléphone si l'appli est restée ouverte après minuit) */
+const hasStarted = (info, p) => {
+  const j = p?.jour ?? info?.jour;
+  if (typeof j === 'number' && j >= 1) return true;
+  try {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: info?.timezone || 'Africa/Douala' });
+    return today >= String(info?.start_date || '').slice(0, 10);
+  } catch { return true; }
+};
+const notStartedMsg = (info) => `Le challenge commence le ${longDate(addDays(info.start_date, 0))}. Vous pourrez envoyer votre premier rapport à partir de ce jour-là.`;
+
 export default function Participant({ slug }) {
   const [info, setInfo] = useState(null);
   const [fatal, setFatal] = useState('');
@@ -133,7 +144,10 @@ export default function Participant({ slug }) {
     setScreen('login');
   };
   const updateProfile = (prof) => { setProfile(prof); writeJSON(`cb_profile_${info.slug}`, prof); };
-  const openReport = (n) => { setPreset(n || null); setScreen('report'); };
+  const openReport = (n) => {
+    if (!hasStarted(info, profile)) { setToast(notStartedMsg(info)); return; }
+    setPreset(n || null); setScreen('report');
+  };
 
   if (fatal) return <div className="solo"><div className="notice bad"><Icon name={isOffline() ? 'wifioff' : 'help'} /> <p>{fatal}</p></div></div>;
   if (screen === 'loading') return <div className="solo"><Loading /></div>;
@@ -488,6 +502,12 @@ function Today({ info, p, openReport }) {
             <p className="kicker">Challenge accompli</p>
             <h2>Vous avez lu toute la Bible.</h2>
             <p className="hero-sub">Louange à Dieu pour cette fidélité.</p>
+          </>
+        ) : p.next && !hasStarted(info, p) ? (
+          <>
+            <p className="kicker">Votre première lecture</p>
+            <h2>{p.next.label}</h2>
+            <p className="hero-sub">{notStartedMsg(info)}</p>
           </>
         ) : p.next ? (
           <>
