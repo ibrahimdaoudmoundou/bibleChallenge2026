@@ -163,6 +163,13 @@ export default function Participant({ slug }) {
           </div>
         ) : null}
         {screen !== 'report' ? <Announcement info={info} /> : null}
+        {inApp && profile.country !== undefined && (!String(profile.country || '').trim() || !String(profile.city || '').trim()) ? (
+          <div className="notice pending" role="status">
+            <Icon name="globe" />
+            <p><b>Complétez vos informations.</b> Votre pays et votre ville sont maintenant obligatoires.{' '}
+              <button type="button" className="link" onClick={() => setMenu(true)}>Les indiquer</button></p>
+          </div>
+        ) : null}
         {screen === 'welcome' ? <Welcome info={info} go={setScreen} /> : null}
         {screen === 'signup' ? <Signup info={info} go={setScreen} onDone={enter} /> : null}
         {screen === 'login' ? <Login info={info} go={setScreen} onDone={enter} notice={loginNotice} /> : null}
@@ -247,9 +254,9 @@ function Story({ slug, bare = false }) {
   );
 }
 
-/* ------------------------------------------------------------------ mes informations (facultatives) */
+/* ------------------------------------------------------------------ mes informations (pays et ville obligatoires) */
 function MyInfo({ info, p, token, onSaved, lost }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!String(p.country || '').trim() || !String(p.city || '').trim());
   const [f, setF] = useState({ country: p.country || '', city: p.city || '', previous: p.previous_participations ?? '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -257,12 +264,15 @@ function MyInfo({ info, p, token, onSaved, lost }) {
   const set = (key) => (e) => setF({ ...f, [key]: e.target.value });
   const save = async (e) => {
     e.preventDefault(); setErr('');
+    const miss = placeMissing(f);
+    if (miss) return setErr(miss);
     if (isOffline()) return setErr(`${OFFLINE_MSG} Réessayez quand vous serez connecté.`);
     setBusy(true);
     try {
       const r = await rpc('api_update_profile', { p_token: token, p_country: f.country, p_city: f.city, p_previous: f.previous === '' ? null : Number(f.previous) });
       if (r.logged_out) return lost();
-      if (r.ok) { onSaved(r.profile); setOpen(false); }
+      if (r.error) setErr(r.error);
+      else if (r.ok) { onSaved(r.profile); setOpen(false); }
     } catch { setErr('La connexion est difficile. Réessayez dans un instant.'); }
     setBusy(false);
   };
@@ -271,20 +281,26 @@ function MyInfo({ info, p, token, onSaved, lost }) {
   }
   return (
     <form className="myinfo" onSubmit={save} data-slug={info.slug}>
-      <p className="small muted">Facultatif : ces informations aident l'équipe à mieux vous accompagner.</p>
-      <OptionalFields f={f} set={set} />
+      <p className="small muted">Le pays et la ville sont obligatoires : ils aident l'équipe à mieux vous accompagner.</p>
+      <PlaceFields f={f} set={set} />
       {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
       <button className="btn primary" disabled={busy}>{busy ? 'Enregistrement…' : 'Enregistrer'}</button>
     </form>
   );
 }
 
-function OptionalFields({ f, set }) {
+const placeMissing = (f) => {
+  if (!String(f.country || '').trim()) return 'Indiquez votre pays (obligatoire).';
+  if (!String(f.city || '').trim()) return 'Indiquez votre ville ou localité (obligatoire).';
+  return '';
+};
+
+function PlaceFields({ f, set }) {
   return (
     <>
       <div className="two">
-        <Field label="Pays (facultatif)"><input value={f.country} onChange={set('country')} placeholder="Cameroun" autoComplete="country-name" /></Field>
-        <Field label="Ville / localité (facultatif)"><input value={f.city} onChange={set('city')} placeholder="Douala" autoComplete="address-level2" /></Field>
+        <Field label="Pays (obligatoire)"><input value={f.country} onChange={set('country')} placeholder="Cameroun" autoComplete="country-name" /></Field>
+        <Field label="Ville / localité (obligatoire)"><input value={f.city} onChange={set('city')} placeholder="Douala" autoComplete="address-level2" /></Field>
       </div>
       <Field label="Nombre de participations précédentes (facultatif)" hint="Combien de fois avez-vous déjà fait ce challenge ? Laissez vide si c'est la première fois.">
         <input type="number" inputMode="numeric" min="0" max="100" value={f.previous} onChange={set('previous')} />
@@ -330,7 +346,6 @@ function Back({ onClick, title }) {
 /* ------------------------------------------------------------------ inscription */
 function Signup({ info, go, onDone }) {
   const [f, setF] = useState({ nom: '', tel: '', pin: '', pin2: '', dep: 'at', livre: info.books[0] || '', chap: 1, country: '', city: '', previous: '' });
-  const [more, setMore] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -341,6 +356,8 @@ function Signup({ info, go, onDone }) {
     const pin = f.pin.trim();
     if (pin && !/^\d{4}$/.test(pin)) return setErr('Le code secret doit contenir 4 chiffres, ou rester vide.');
     if (pin && pin !== f.pin2.trim()) return setErr('Les deux codes ne sont pas identiques.');
+    const miss = placeMissing(f);
+    if (miss) return setErr(miss);
     if (isOffline()) return setErr(`${OFFLINE_MSG} La création du compte demande une connexion : réessayez dès que vous êtes connecté.`);
     setBusy(true);
     try {
@@ -402,9 +419,7 @@ function Signup({ info, go, onDone }) {
         </div>
       ) : null}
 
-      {more ? <OptionalFields f={f} set={set} /> : (
-        <button type="button" className="link" onClick={() => setMore(true)}><Icon name="plus" size={16} /> Ajouter mon pays, ma ville… (facultatif)</button>
-      )}
+      <PlaceFields f={f} set={set} />
 
       {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
       <button className="btn primary" disabled={busy}>{busy ? 'Création en cours…' : 'Créer mon compte'}</button>
