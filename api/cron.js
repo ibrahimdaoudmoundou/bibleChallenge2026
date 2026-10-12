@@ -58,7 +58,7 @@ export default async function handler(req, res) {
 
   const { task = "ping", force, to } = req.query || {};
   try {
-    const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+    const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY, { auth: { persistSession: false } });
     const { data: summaries, error } = await sb.rpc("cron_summaries");
     if (error) throw error;
     if (task === "ping") return res.status(200).json({ ok: true, sessions: summaries.length });
