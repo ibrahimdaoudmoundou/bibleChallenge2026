@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, rpc, formatDate, isMissingFn } from '../supabase.js';
 import { waLink, morningText, eveningText, waShare, needsReminder } from '../../shared/messages.js';
 import { Icon, Brand } from '../ui/icons.jsx';
@@ -105,23 +105,74 @@ function Panel({ email, logout }) {
     setCid((cur) => select || cur || r.list.find((c) => c.is_active)?.id || r.list[0]?.id || '');
   }, []);
 
+  // Économie de données : les portions ne changent pas pendant une session, on les charge une seule fois.
+  const portionsCache = useRef({});
+  const [loadedAt, setLoadedAt] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const statsAt = useRef(0);
+
   const loadSummary = useCallback(async () => {
     if (!cid) { setSummary(null); return; }
-    const r = await rpc('admin_summary', { p_cid: cid });
-    if (r.error) { setError(r.error); return; }
-    const sm = r.summary;
-    if (!sm.challenge.platform_url) sm.challenge.platform_url = `${window.location.origin}/${sm.challenge.slug}`;
-    if (sm.challenge.plan_url && sm.challenge.plan_url.startsWith('/')) sm.challenge.plan_url = window.location.origin + sm.challenge.plan_url;
-    try { const i = await rpc('api_info', { p_slug: sm.challenge.slug }); sm.portions = i.portions || []; } catch { sm.portions = []; }
-    setSummary(sm);
+    setRefreshing(true);
+    try {
+      const r = await rpc('admin_summary', { p_cid: cid });
+      if (r.error) { setError(r.error); return; }
+      const sm = r.summary;
+      if (!sm.challenge.platform_url) sm.challenge.platform_url = `${window.location.origin}/${sm.challenge.slug}`;
+      if (sm.challenge.plan_url && sm.challenge.plan_url.startsWith('/')) sm.challenge.plan_url = window.location.origin + sm.challenge.plan_url;
+      const slug = sm.challenge.slug;
+      if (!portionsCache.current[slug]) {
+        try { const i = await rpc('api_info', { p_slug: slug }); if (i.portions?.length) portionsCache.current[slug] = i.portions; } catch { /* réessai au prochain chargement */ }
+      }
+      sm.portions = portionsCache.current[slug] || [];
+      setSummary(sm); setError(''); setLoadedAt(Date.now());
+      statsAt.current = 0; // les statistiques seront recalculées à la prochaine visite du tableau de bord
+    } finally { setRefreshing(false); }
+  }, [cid]);
+
+  // Statistiques : chargées seulement quand le tableau de bord est affiché (et au plus toutes les 5 minutes).
+  const loadStats = useCallback(async (force = false) => {
+    if (!cid) return;
+    if (!force && statsAt.current && Date.now() - statsAt.current < 5 * 60 * 1000) return;
+    statsAt.current = Date.now();
     try {
       const st = await rpc('admin_stats', { p_cid: cid });
       setStats(st.ok ? st : null); setV2(true);
-    } catch (e) { setStats(null); if (isMissingFn(e)) setV2(false); }
+    } catch (e) { statsAt.current = 0; setStats(null); if (isMissingFn(e)) setV2(false); }
   }, [cid]);
 
+  // Mise à jour locale après une action : on ne recharge plus toute la liste.
+  const patch = useCallback((ch = {}) => setSummary((sm) => {
+    if (!sm) return sm;
+    let ps = sm.participants || [];
+    if (ch.removeId) ps = ps.filter((x) => x.id !== ch.removeId);
+    if (ch.profile?.id) {
+      const exists = ps.some((x) => x.id === ch.profile.id);
+      ps = exists ? ps.map((x) => (x.id === ch.profile.id ? { ...x, ...ch.profile } : x)) : [...ps, ch.profile];
+    }
+    return {
+      ...sm,
+      participants: ps,
+      challenge: ch.challenge ? { ...sm.challenge, ...ch.challenge } : sm.challenge,
+      reports_total: Math.max(0, (sm.reports_total || 0) + (ch.reports || 0)),
+      reports_today: Math.max(0, (sm.reports_today || 0) + (ch.reportsToday || 0)),
+      questions_pending: Math.max(0, (sm.questions_pending || 0) + (ch.questions || 0)),
+    };
+  }), []);
+
   useEffect(() => { loadChallenges().catch(() => setError('Connexion difficile.')); }, [loadChallenges]);
-  useEffect(() => { setSummary(null); setStats(null); loadSummary().catch(() => setError('Connexion difficile. Vérifiez votre réseau puis rechargez la page.')); }, [loadSummary]);
+  useEffect(() => { setSummary(null); setStats(null); statsAt.current = 0; loadSummary().catch(() => setError('Connexion difficile. Vérifiez votre réseau puis rechargez la page.')); }, [loadSummary]);
+  useEffect(() => { if (tab === 'dash' && summary) loadStats(); }, [tab, summary, loadStats]);
+
+  // Retour sur l'onglet du navigateur : actualisation automatique si les données ont plus de 5 minutes.
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible' && loadedAt && Date.now() - loadedAt > 5 * 60 * 1000) loadSummary().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [loadedAt, loadSummary]);
+  const refresh = () => { statsAt.current = 0; loadSummary().then(() => { if (tab === 'dash') loadStats(true); }).catch(() => setError('Connexion difficile. Réessayez.')); };
 
   const current = challenges.find((c) => c.id === cid);
   const goParticipants = (status, extra = null) => { setFilter(status || ''); setPreset(extra ? { ...extra, t: Date.now() } : null); setTab('part'); };
@@ -154,10 +205,16 @@ function Panel({ email, logout }) {
 
       <main className="admin-main">
         {error ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{error}</p></div> : null}
+        {summary && ['dash', 'part', 'quest'].includes(tab) ? (
+          <div className="freshness">
+            <span>Données de {new Date(loadedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+            <button className="mini" onClick={refresh} disabled={refreshing}><Icon name="repeat" size={14} /> {refreshing ? 'Actualisation…' : 'Actualiser'}</button>
+          </div>
+        ) : null}
         {tab === 'dash' ? <Dash s={summary} stats={stats} v2={v2} toast={setToast} goParticipants={goParticipants} /> : null}
-        {tab === 'part' ? <Participants s={summary} v2={v2} reload={loadSummary} filter={filter} setFilter={setFilter} preset={preset} toast={setToast} /> : null}
-        {tab === 'quest' ? <Questions cid={cid} reload={loadSummary} /> : null}
-        {tab === 'public' ? <PublicPage s={summary} v2={v2} reload={loadSummary} toast={setToast} /> : null}
+        {tab === 'part' ? <Participants s={summary} v2={v2} reload={loadSummary} patch={patch} filter={filter} setFilter={setFilter} preset={preset} toast={setToast} /> : null}
+        {tab === 'quest' ? <Questions cid={cid} patch={patch} /> : null}
+        {tab === 'public' ? <PublicPage s={summary} v2={v2} patch={patch} toast={setToast} /> : null}
         {tab === 'hist' ? <History cid={cid} v2={v2} s={summary} /> : null}
         {tab === 'sess' ? <Sessions challenges={challenges} current={current} reload={loadChallenges} setCid={setCid} toast={setToast} /> : null}
         <Credit />
@@ -392,7 +449,7 @@ function History({ cid, v2, s }) {
 }
 
 /* ------------------------------------------------------------------ page publique */
-function PublicPage({ s, v2, reload, toast }) {
+function PublicPage({ s, v2, patch, toast }) {
   const [story, setStory] = useState(null);
   const [ann, setAnn] = useState('');
   const [err, setErr] = useState('');
@@ -430,7 +487,7 @@ function PublicPage({ s, v2, reload, toast }) {
     setErr(''); setBusy('ann');
     try {
       const r = await rpc('admin_save_announcement', { p_cid: cid, p_text: text });
-      if (r.error) setErr(r.error); else { setAnn(text); toast(text ? 'Annonce publiée.' : 'Annonce retirée.'); await reload(); }
+      if (r.error) setErr(r.error); else { setAnn(text); toast(text ? 'Annonce publiée.' : 'Annonce retirée.'); patch({ challenge: { announcement: text } }); }
     } catch { setErr('Connexion difficile. Réessayez.'); }
     setBusy('');
   };
@@ -482,7 +539,7 @@ function PublicPage({ s, v2, reload, toast }) {
   );
 }
 
-function Questions({ cid, reload }) {
+function Questions({ cid, patch }) {
   const [list, setList] = useState(null);
   const load = useCallback(async () => {
     if (!cid) return;
@@ -490,7 +547,12 @@ function Questions({ cid, reload }) {
     setList(r.list || []);
   }, [cid]);
   useEffect(() => { setList(null); load().catch(() => setList([])); }, [load]);
-  const mark = async (q) => { await rpc('admin_mark_question', { p_id: q.id, p_answered: !q.answered }); await load(); reload(); };
+  const mark = async (q) => {
+    const r = await rpc('admin_mark_question', { p_id: q.id, p_answered: !q.answered });
+    if (r?.error) return;
+    setList((l) => l.map((x) => (x.id === q.id ? { ...x, answered: !q.answered } : x)));
+    patch({ questions: q.answered ? 1 : -1 });
+  };
   if (list === null) return <Loading />;
   return (
     <>

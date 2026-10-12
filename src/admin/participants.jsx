@@ -51,7 +51,7 @@ const participantColumns = (total) => [
 ];
 
 /* ------------------------------------------------------------------ liste des participants */
-export function Participants({ s, v2, reload, filter, setFilter, preset, toast }) {
+export function Participants({ s, v2, reload, patch, filter, setFilter, preset, toast }) {
   const [q, setQ] = useState('');
   const [country, setCountry] = useState('');
   const [city, setCity] = useState('');
@@ -63,6 +63,7 @@ export function Participants({ s, v2, reload, filter, setFilter, preset, toast }
   const [adding, setAdding] = useState(false);
   const [podium, setPodium] = useState(false);
   const [reportsExport, setReportsExport] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     if (!preset) return;
@@ -102,11 +103,22 @@ export function Participants({ s, v2, reload, filter, setFilter, preset, toast }
 
   const resetPin = async (p) => {
     if (!window.confirm(`Effacer le code secret de ${p.name} ?`)) return;
-    setBusy(p.id); await rpc('admin_reset_pin', { p_participant: p.id }); await reload(); setBusy(''); toast('Code secret effacé.');
+    setBusy(p.id);
+    try {
+      const r = await rpc('admin_reset_pin', { p_participant: p.id });
+      if (r?.error) toast(r.error); else { patch({ profile: { id: p.id, protected: false } }); toast('Code secret effacé.'); }
+    } catch { toast('Connexion difficile. Réessayez.'); }
+    setBusy('');
   };
   const remove = async (p) => {
     if (!window.confirm(`Supprimer ${p.name} et tous ses rapports ? Cette action est définitive.`)) return;
-    setBusy(p.id); await rpc('admin_delete_participant', { p_participant: p.id }); await reload(); setBusy(''); toast('Participant supprimé.');
+    setBusy(p.id);
+    try {
+      const r = await rpc('admin_delete_participant', { p_participant: p.id });
+      if (r?.error) toast(r.error);
+      else { patch({ removeId: p.id, reports: -(p.nb_rapports || 0), reportsToday: p.rapport_aujourdhui ? -1 : 0 }); toast('Participant supprimé.'); }
+    } catch { toast('Connexion difficile. Réessayez.'); }
+    setBusy('');
   };
   const doExport = (format) => exportTable({
     format, title: `Participants — ${s.challenge.name}`,
@@ -127,8 +139,14 @@ export function Participants({ s, v2, reload, filter, setFilter, preset, toast }
       </header>
       {!v2 ? <V2Notice /> : null}
 
-      <div className="filters">
+      <div className="filters-top">
         <label className="search"><Icon name="search" size={18} /><input placeholder="Nom, numéro ou code" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Rechercher" /></label>
+        <button type="button" className={`mini filters-toggle ${showFilters ? 'on' : ''}`} onClick={() => setShowFilters((v) => !v)} aria-expanded={showFilters}>
+          <Icon name="sliders" size={15} /> Filtres{filterText && !q ? ' (actifs)' : ''}
+        </button>
+      </div>
+      <div className={`filters ${showFilters ? 'open' : ''}`}>
+        <label className="search search-wide"><Icon name="search" size={18} /><input placeholder="Nom, numéro ou code" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Rechercher" /></label>
         <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filtrer par statut">
           <option value="">Tous les statuts</option>
           {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
@@ -166,24 +184,24 @@ export function Participants({ s, v2, reload, filter, setFilter, preset, toast }
 
       {list.length === 0 ? <p className="muted empty-line">Aucun participant ne correspond à cette recherche.</p> : (
         <div className="tablewrap">
-          <table className="table">
+          <table className="table ptable">
             <thead><tr>{ranked ? <th>#</th> : null}<th>Participant</th><th>Statut</th><th>Lecture</th><th>Régularité</th><th>Prochaine portion</th><th><span className="sr">Actions</span></th></tr></thead>
             <tbody>
               {list.map((p, i) => (
-                <tr key={p.id}>
+                <tr key={p.id} className={ranked ? 'ranked' : ''}>
                   {ranked ? <td className="rank">{i < 3 ? MEDALS[i] : i + 1}</td> : null}
                   <td className="who-cell">
                     <button className="linkish" onClick={() => setOpen(p.id)}><b>{p.name}</b></button>
                     <small>{p.code} · +{p.phone}{place(p) ? ` · ${place(p)}` : ''}</small>
                     {p.added_by ? <small className="tag">Ajouté par un admin</small> : null}
                   </td>
-                  <td><Chip status={p.statut} /></td>
+                  <td className="status-cell"><Chip status={p.statut} /></td>
                   <td className="read">
                     <div className="mini-meter"><i style={{ width: `${Math.min(100, pct(p, total))}%` }} /></div>
                     <small>{pct(p, total)} % · {p.chap_lus} ch.{p.retard > 0 ? `, retard ${p.retard}` : ''}</small>
                   </td>
-                  <td className="nowrap"><small>{p.nb_rapports ?? '—'} rapport{(p.nb_rapports || 0) > 1 ? 's' : ''}</small><small>{p.jours_actifs ?? '—'} jour{(p.jours_actifs || 0) > 1 ? 's' : ''} actif{(p.jours_actifs || 0) > 1 ? 's' : ''}</small></td>
-                  <td className="next-cell">{p.next ? `P${p.next.n}, ${p.next.label}` : '—'}</td>
+                  <td className="nowrap reg-cell"><small>{p.nb_rapports ?? '—'} rapport{(p.nb_rapports || 0) > 1 ? 's' : ''}</small><small>{p.jours_actifs ?? '—'} jour{(p.jours_actifs || 0) > 1 ? 's' : ''} actif{(p.jours_actifs || 0) > 1 ? 's' : ''}</small></td>
+                  <td className="next-cell"><small className="m-label">Prochaine portion</small>{p.next ? `P${p.next.n}, ${p.next.label}` : '—'}</td>
                   <td className="row-actions">
                     <button className="icon-btn" onClick={() => setOpen(p.id)} title="Fiche de suivi" aria-label={`Fiche de ${p.name}`}><Icon name="eye" size={18} /></button>
                     <a className="icon-btn wa" href={waLink(p.phone, reminderText(p, s))} target="_blank" rel="noreferrer" title="Relancer sur WhatsApp" aria-label={`Relancer ${p.name} sur WhatsApp`}><Icon name="send" size={18} /></a>
@@ -197,8 +215,8 @@ export function Participants({ s, v2, reload, filter, setFilter, preset, toast }
         </div>
       )}
 
-      {current ? <ParticipantSheet p={current} s={s} v2={v2} close={() => setOpen(null)} reload={reload} toast={toast} /> : null}
-      <AddParticipant open={adding} s={s} close={() => setAdding(false)} reload={reload} toast={toast}
+      {current ? <ParticipantSheet p={current} s={s} v2={v2} close={() => setOpen(null)} patch={patch} toast={toast} /> : null}
+      <AddParticipant open={adding} s={s} close={() => setAdding(false)} patch={patch} toast={toast}
         done={(id) => { setAdding(false); setOpen(id); }} />
       <Podium open={podium} close={() => setPodium(false)} list={list} sort={sort} s={s} filterText={filterText} />
       <ReportsExport open={reportsExport} close={() => setReportsExport(false)} s={s} />
@@ -207,7 +225,7 @@ export function Participants({ s, v2, reload, filter, setFilter, preset, toast }
 }
 
 /* ------------------------------------------------------------------ fiche d'un participant */
-function ParticipantSheet({ p, s, v2, close, reload, toast }) {
+function ParticipantSheet({ p, s, v2, close, patch, toast }) {
   const total = s.total_chapters || 1;
   const [reports, setReports] = useState(null);
   const [edit, setEdit] = useState(false);
@@ -226,7 +244,9 @@ function ParticipantSheet({ p, s, v2, close, reload, toast }) {
     if (!window.confirm(`Supprimer ce rapport du ${new Date(r.created_at).toLocaleDateString('fr-FR')} (P${r.portion_n}, ${r.chapters} ch.) ?`)) return;
     const x = await rpc('admin_delete_report', { p_id: r.id });
     if (x.error) return setMsg(x.error);
-    toast('Rapport supprimé.'); await reload(); await load();
+    const isToday = new Date(r.created_at).toDateString() === new Date().toDateString();
+    patch({ profile: x.profile || { id: p.id, nb_rapports: Math.max(0, (p.nb_rapports || 1) - 1) }, reports: -1, reportsToday: isToday ? -1 : 0 });
+    toast('Rapport supprimé.'); await load();
   };
 
   return (
@@ -261,8 +281,8 @@ function ParticipantSheet({ p, s, v2, close, reload, toast }) {
         {!v2 ? <V2Notice /> : null}
         {msg ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{msg}</p></div> : null}
 
-        {edit ? <EditForm p={p} done={async () => { setEdit(false); toast('Participant modifié.'); await reload(); }} /> : null}
-        {adding ? <AdminReportForm p={p} s={s} done={async () => { setAdding(false); toast('Rapport enregistré.'); await reload(); await load(); }} /> : null}
+        {edit ? <EditForm p={p} done={(profile) => { setEdit(false); toast('Participant modifié.'); if (profile) patch({ profile }); }} /> : null}
+        {adding ? <AdminReportForm p={p} s={s} done={async (profile, isToday) => { setAdding(false); toast('Rapport enregistré.'); if (profile) patch({ profile, reports: 1, reportsToday: isToday ? 1 : 0 }); await load(); }} /> : null}
 
         <h3 className="fiche-h">Rapports</h3>
         {reports === null ? <Loading /> : reports.length === 0 ? <p className="muted small">Aucun rapport pour l'instant.</p> : (
@@ -300,7 +320,7 @@ function EditForm({ p, done }) {
     setBusy(true);
     try {
       const r = await rpc('admin_update_participant', { p_participant: p.id, p: { ...f, previous: f.previous === '' ? '' : String(f.previous) } });
-      if (r.error) setErr(r.error); else await done();
+      if (r.error) setErr(r.error); else await done(r.profile);
     } catch { setErr('Connexion difficile. Réessayez.'); }
     setBusy(false);
   };
@@ -339,7 +359,7 @@ function AdminReportForm({ p, s, done }) {
         p_verse: f.verse, p_learned: f.learned, p_application: f.application, p_question: f.question,
         p_date: f.date || null,
       });
-      if (r.error) setErr(r.error); else await done();
+      if (r.error) setErr(r.error); else await done(r.profile, !f.date || f.date === today);
     } catch { setErr('Connexion difficile. Réessayez : le texte est conservé.'); }
     setBusy(false);
   };
@@ -375,7 +395,7 @@ function AdminReportForm({ p, s, done }) {
 }
 
 /* ------------------------------------------------------------------ ajout d'un participant */
-function AddParticipant({ open, s, close, reload, toast, done }) {
+function AddParticipant({ open, s, close, patch, toast, done }) {
   const empty = { name: '', phone: '', country: '', city: '', previous: '', start: 'at', book: '', chap: 1 };
   const [f, setF] = useState(empty);
   const [err, setErr] = useState('');
@@ -390,7 +410,7 @@ function AddParticipant({ open, s, close, reload, toast, done }) {
     try {
       const r = await rpc('admin_add_participant', { p_cid: s.challenge.id, p: { ...f, previous: String(f.previous), chap: String(f.chap) } });
       if (r.error) setErr(r.error);
-      else { toast(`${r.profile.name} ajouté (${r.profile.code}).`); setF(empty); await reload(); done(r.profile.id); }
+      else { toast(`${r.profile.name} ajouté (${r.profile.code}).`); setF(empty); patch({ profile: r.profile }); done(r.profile.id); }
     } catch { setErr('Connexion difficile. Réessayez.'); }
     setBusy(false);
   };
