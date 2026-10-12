@@ -502,3 +502,52 @@ textarea.tall { min-height: 220px; }
   .podium .pod-value { grid-column: 2; text-align: left; }
   .photo-edit { flex-direction: column; }
 }
+
+/* ---- v2.4 : fraîcheur des données + liste des participants adaptée à tous les écrans ---- */
+.freshness { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 12px; margin: -6px 0 10px; font-size: 13px; color: var(--doux); }
+.filters-top { display: none; }
+.ptable .m-label { display: none; }
+.ptable .next-cell { max-width: 260px; }
+
+/* écrans moyens et petits : la liste devient des cartes, plus de défilement gauche-droite */
+@media (max-width: 1100px) {
+  .tablewrap:has(.ptable) { overflow: visible; background: transparent; border: 0; border-radius: 0; }
+  .ptable, .ptable tbody { display: block; }
+  .ptable thead { display: none; }
+  .ptable tr {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "who status" "read reg" "next next" "actions actions";
+    gap: 8px 14px; padding: 14px 16px; margin-bottom: 10px;
+    background: #fff; border: 1px solid var(--trait); border-radius: 14px;
+  }
+  .ptable tr.ranked { grid-template-columns: 34px minmax(0, 1fr) auto; grid-template-areas: "rank who status" "rank read reg" "rank next next" "rank actions actions"; }
+  .ptable td { display: block; padding: 0; border: 0; min-width: 0; max-width: none; }
+  .ptable .rank { grid-area: rank; width: auto; text-align: left; align-self: start; }
+  .ptable .who-cell { grid-area: who; min-width: 0; }
+  .ptable .who-cell small { overflow-wrap: anywhere; }
+  .ptable .status-cell { grid-area: status; justify-self: end; align-self: start; }
+  .ptable .read { grid-area: read; min-width: 0; }
+  .ptable .reg-cell { grid-area: reg; text-align: right; }
+  .ptable .next-cell { grid-area: next; font-size: 13.5px; }
+  .ptable .next-cell .m-label { display: block; }
+  .ptable .row-actions { grid-area: actions; display: flex; justify-content: flex-end; gap: 4px; padding-top: 8px; border-top: 1px solid #edf0f8; }
+}
+
+/* téléphones : recherche + bouton « Filtres » repliable */
+@media (max-width: 880px) {
+  .filters-top { display: flex; gap: 8px; margin-bottom: 10px; }
+  .filters-top .search { min-width: 0; }
+  .filters-toggle { flex: none; }
+  .filters-toggle.on { background: var(--indigo-2); color: #fff; }
+  .filters { display: none; }
+  .filters.open { display: grid; grid-template-columns: 1fr 1fr; }
+  .filters .search-wide { display: none; }
+  .toolbar { gap: 8px; }
+  .toolbar select { min-width: 0; }
+  .head-row .btn.fit { width: 100%; justify-content: center; }
+}
+@media (max-width: 520px) {
+  .filters.open { grid-template-columns: 1fr; }
+  .ptable tr { padding: 12px 14px; }
+  .ptable .reg-cell small { font-size: 12px; }
+}
