@@ -557,8 +557,10 @@ function Today({ info, p, openReport }) {
         {p.attendues > 0 ? (
           <p className="muted small">
             {p.retard > 0
-              ? `Le repère doré montre où vous devriez en être aujourd'hui. Il vous reste ${p.retard} chapitres à rattraper.`
-              : 'Le repère doré montre où vous devriez en être aujourd\'hui. Vous êtes à jour.'}
+              ? `Le repère doré montre l'objectif de ce soir. Il vous reste ${p.retard} chapitres à rattraper des jours précédents.`
+              : p.chap_lus < p.chap_attendus
+                ? 'Le repère doré montre l\'objectif de ce soir. Vous êtes à jour : il reste la lecture du jour.'
+                : 'Le repère doré montre l\'objectif de ce soir. Vous êtes à jour.'}
           </p>
         ) : null}
         <p className="muted small">{p.completes} portion{p.completes > 1 ? 's' : ''} terminée{p.completes > 1 ? 's' : ''} sur {info.portions.length}.</p>
