@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { spreadChapters, reportDays } from '../ui/spread.js';
 import { rpc, safeGet, safeSet, isMissingFn, isOffline } from '../supabase.js';
 import { Icon, Brand, Lamp } from '../ui/icons.jsx';
 import { Chip, Toast, Sheet, Field, Loading, addDays, longDate, initials } from '../ui/kit.jsx';
@@ -192,7 +193,7 @@ export default function Participant({ slug }) {
         {screen === 'reports' && profile ? <Reports token={token()} openReport={openReport} lost={lostSession} /> : null}
         {screen === 'report' && profile ? (
           <ReportForm info={info} p={profile} token={token()} preset={preset} back={() => setScreen('today')} lost={lostSession}
-            onDone={(p) => { updateProfile(p); setToast('Rapport enregistré. Que Dieu bénisse votre lecture.'); setScreen('today'); }}
+            onDone={(p, msg) => { updateProfile(p); setToast(msg || 'Rapport enregistré. Que Dieu bénisse votre lecture.'); setScreen('today'); }}
             onQueued={(n) => { setPending(n); setToast('Rapport gardé sur ce téléphone. Il sera envoyé automatiquement dès le retour d\'Internet.'); setScreen('today'); }} />
         ) : null}
         {!inApp && screen !== 'report' && info.signature ? <footer className="signature">{info.signature}</footer> : null}
@@ -517,7 +518,7 @@ function Today({ info, p, openReport }) {
               Portion {p.next.n} sur {info.portions.length}, {p.next.chapters} chapitres
               {p.next.deja ? `. Déjà lu : ${p.next.deja} sur ${p.next.chapters}.` : '.'}
             </p>
-            <button className="btn gold" onClick={() => openReport(p.next.n)}>
+            <button className="btn gold" onClick={() => openReport(null)}>
               <Icon name="pen" /> Envoyer mon rapport
             </button>
           </>
@@ -668,11 +669,16 @@ function Reports({ token, openReport, lost }) {
 function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
   const byN = Object.fromEntries(info.portions.map((x) => [x.n, x]));
   const draft = readDraft(info.slug);
+  // « simple » : seulement le nombre de chapitres (répartition automatique) ; « portion » : l'ancien formulaire
+  const [mode, setMode] = useState(draft?.mode || (preset ? 'portion' : 'simple'));
   const [portion, setPortion] = useState(draft?.portion && byN[draft.portion] ? draft.portion : preset || (p.next ? p.next.n : p.ordre[0]));
   const ch = byN[portion]?.chapters || 1;
   const deja = p.lect[portion] || 0;
   const reste = deja >= ch ? ch : ch - deja;
   const [chap, setChap] = useState(draft?.chap ? String(draft.chap) : String(reste));
+  const { today, days } = useMemo(() => reportDays(info.start_date, info.total_days, info.timezone), [info.start_date, info.total_days, info.timezone]);
+  const [day, setDay] = useState(draft?.day && days.some((d) => d.iso === draft.day) ? draft.day : (days[0]?.iso || today));
+  const [nb, setNb] = useState(draft?.nb ? String(draft.nb) : '');
   const [f, setF] = useState(draft?.f || { verset: '', appris: '', appli: '', question: '' });
   const [askQ, setAskQ] = useState(Boolean(draft?.f?.question));
   const [err, setErr] = useState('');
@@ -681,9 +687,9 @@ function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
 
   // Brouillon gardé sur le téléphone pendant la saisie
   useEffect(() => {
-    const empty = !f.verset.trim() && !f.appris.trim() && !f.appli.trim() && !f.question.trim();
-    saveDraft(info.slug, empty ? null : { portion, chap, f });
-  }, [info.slug, portion, chap, f]);
+    const empty = !f.verset.trim() && !f.appris.trim() && !f.appli.trim() && !f.question.trim() && !nb;
+    saveDraft(info.slug, empty ? null : { mode, portion, chap, f, day, nb });
+  }, [info.slug, mode, portion, chap, f, day, nb]);
 
   const changePortion = (e) => {
     const n = Number(e.target.value);
@@ -692,20 +698,42 @@ function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
     setChap(String(d >= c ? c : c - d));
   };
 
+  const nbVal = Math.floor(Number(nb) || 0);
+  const plan = spreadChapters({ order: p.ordre, byN, lect: p.lect, chapters: nbVal });
+  const step = (k) => setNb(String(Math.max(0, nbVal + k) || ''));
+
   const submit = async (e) => {
     e.preventDefault();
     setErr('');
-    const payload = {
-      p_token: token, p_portion: portion, p_chapters: Number(chap),
-      p_verse: f.verset, p_learned: f.appris, p_application: f.appli, p_question: f.question, p_client_id: uuid(),
-    };
+    let payload;
+    if (mode === 'simple') {
+      if (nbVal < 1) return setErr('Indiquez le nombre de chapitres lus.');
+      if (plan.overflow > 0) return setErr(`Il ne reste que ${plan.remainingTotal} chapitre(s) à lire dans le plan.`);
+      payload = {
+        p_token: token, p_chapters: nbVal, p_date: day && day !== today ? day : null,
+        p_verse: f.verset, p_learned: f.appris, p_application: f.appli, p_question: f.question, p_client_id: uuid(),
+      };
+    } else {
+      payload = {
+        p_token: token, p_portion: portion, p_chapters: Number(chap),
+        p_verse: f.verset, p_learned: f.appris, p_application: f.appli, p_question: f.question, p_client_id: uuid(),
+      };
+    }
     const queue = () => { const n = enqueue(info.slug, token, payload); saveDraft(info.slug, null); onQueued(n); };
     if (isOffline()) return queue();
     setBusy(true);
     try {
       const r = await sendReport(payload);
       if (r.logged_out) { setBusy(false); return lost(); }
-      if (r.error) setErr(r.error); else { saveDraft(info.slug, null); onDone(r.profile); }
+      if (r.error) setErr(r.error);
+      else {
+        saveDraft(info.slug, null);
+        const parts = r.parts || [];
+        const msg = parts.length > 1
+          ? `Rapport enregistré : ${parts.map((x) => `${x.chapters} ch. en P${x.n}`).join(', ')}. Que Dieu bénisse votre lecture.`
+          : '';
+        onDone(r.profile, msg);
+      }
     } catch (e2) {
       if (e2?.fatal) setErr('Le rapport n\'a pas pu être enregistré. Réessayez dans un instant : votre texte est conservé.');
       else { setBusy(false); return queue(); } // réseau coupé pendant l'envoi : on garde le rapport sur le téléphone
@@ -715,26 +743,69 @@ function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
 
   const opts = [];
   for (let k = 1; k < reste; k++) opts.push(<option key={k} value={k}>{k} chapitre{k > 1 ? 's' : ''}</option>);
+  const lastPart = plan.parts[plan.parts.length - 1];
 
   return (
     <form className="page report" onSubmit={submit} noValidate>
       <Back onClick={back} title="Mon rapport" />
-      <Field label="Portion lue">
-        <select value={portion} onChange={changePortion}>
-          {p.ordre.map((n) => {
-            const d = p.lect[n] || 0, c = byN[n]?.chapters || 0;
-            return <option key={n} value={n}>{d >= c ? '✓ ' : d ? `${d}/${c} · ` : ''}P{n} — {byN[n]?.label}</option>;
-          })}
-        </select>
-      </Field>
-      <Field label="Chapitres lus" hint={deja >= ch ? 'Portion déjà terminée : ce rapport sera enregistré en plus.' : deja ? `Déjà lu dans cette portion : ${deja} sur ${ch}.` : ''}>
-        <select value={chap} onChange={(e) => setChap(e.target.value)}>
-          <option value={reste}>
-            {deja >= ch ? `Toute la portion (${ch})` : deja ? `Tout le reste (${reste})` : `Toute la portion (${ch})`}
-          </option>
-          {opts}
-        </select>
-      </Field>
+      {mode === 'simple' ? (
+        <>
+          <Field label="Pour quel jour ?" hint="Vous pouvez aussi rendre compte d'un jour passé que vous avez oublié.">
+            <select value={day} onChange={(e) => setDay(e.target.value)}>
+              {days.map((d) => <option key={d.iso} value={d.iso}>{d.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Combien de chapitres avez-vous lus ?" hint="Un seul nombre suffit : l'application les range toute seule dans vos portions.">
+            <div className="stepper">
+              <button type="button" className="step-btn" onClick={() => step(-1)} aria-label="Un chapitre de moins">−</button>
+              <input type="number" inputMode="numeric" min="1" value={nb} onChange={(e) => setNb(e.target.value.replace(/[^\d]/g, ''))} placeholder="0" aria-label="Nombre de chapitres lus" />
+              <button type="button" className="step-btn" onClick={() => step(1)} aria-label="Un chapitre de plus">+</button>
+            </div>
+          </Field>
+          {nbVal > 0 ? (
+            <div className={`spread ${plan.overflow > 0 ? 'bad' : ''}`} aria-live="polite">
+              {plan.overflow > 0 ? (
+                <p><b>Il ne reste que {plan.remainingTotal} chapitre(s) à lire dans le plan.</b></p>
+              ) : (
+                <>
+                  <p>Vos <b>{nbVal} chapitre{nbVal > 1 ? 's' : ''}</b> seront comptés ainsi :</p>
+                  <ul>
+                    {plan.parts.map((x) => (
+                      <li key={x.n}>
+                        <span className={x.complete ? 'ok' : 'plus'}>{x.complete ? '✓' : '+'}</span>
+                        <span><b>P{x.n}</b> {x.label} : {x.chapters} chapitre{x.chapters > 1 ? 's' : ''}
+                          {x.complete ? ' (portion terminée)' : ` (${x.deja + x.chapters} sur ${x.total})`}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {lastPart && !lastPart.complete ? <p className="small muted">Vous reprendrez dans la portion P{lastPart.n}, après {lastPart.deja + lastPart.chapters} chapitre{lastPart.deja + lastPart.chapters > 1 ? 's' : ''}.</p> : null}
+                </>
+              )}
+            </div>
+          ) : null}
+          <button type="button" className="link" onClick={() => setMode('portion')}>Choisir la portion moi-même</button>
+        </>
+      ) : (
+        <>
+          <Field label="Portion lue">
+            <select value={portion} onChange={changePortion}>
+              {p.ordre.map((n) => {
+                const d = p.lect[n] || 0, c = byN[n]?.chapters || 0;
+                return <option key={n} value={n}>{d >= c ? '✓ ' : d ? `${d}/${c} · ` : ''}P{n} — {byN[n]?.label}</option>;
+              })}
+            </select>
+          </Field>
+          <Field label="Chapitres lus" hint={deja >= ch ? 'Portion déjà terminée : ce rapport sera enregistré en plus.' : deja ? `Déjà lu dans cette portion : ${deja} sur ${ch}.` : ''}>
+            <select value={chap} onChange={(e) => setChap(e.target.value)}>
+              <option value={reste}>
+                {deja >= ch ? `Toute la portion (${ch})` : deja ? `Tout le reste (${reste})` : `Toute la portion (${ch})`}
+              </option>
+              {opts}
+            </select>
+          </Field>
+          <button type="button" className="link" onClick={() => setMode('simple')}>Plus simple : indiquer seulement le nombre de chapitres lus</button>
+        </>
+      )}
       <Field label="Le verset qui m'a marqué (facultatif)"><textarea value={f.verset} onChange={set('verset')} placeholder="Référence et texte du verset" /></Field>
       <Field label="Ce que j'ai appris (facultatif)"><textarea value={f.appris} onChange={set('appris')} /></Field>
       <Field label="Comment je vais l'appliquer (facultatif)"><textarea value={f.appli} onChange={set('appli')} /></Field>

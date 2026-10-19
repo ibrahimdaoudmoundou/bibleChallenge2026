@@ -31,9 +31,12 @@ export const saveDraft = (slug, d) => safeSet(draftKey(slug), d ? JSON.stringify
 // Envoi d'un rapport : nouvelle fonction (sans doublon), sinon l'ancienne si la base n'est pas encore à jour
 export async function sendReport(payload) {
   try {
+    // Rapport simple (sans portion) : répartition automatique côté base
+    if (payload.p_portion === undefined) return await rpc('api_report_simple', payload);
     return await rpc('api_report_v2', payload);
   } catch (e) {
     if (!isMissingFn(e)) throw e;
+    if (payload.p_portion === undefined) return { error: 'Le rapport simple n\'est pas encore disponible. Utilisez « Choisir la portion moi-même ».' };
     const { p_client_id: _ignored, ...old } = payload;
     return rpc('api_report', old);
   }
