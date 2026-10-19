@@ -5,6 +5,7 @@ import { Icon } from '../ui/icons.jsx';
 import { Chip, STATUS, Field, Loading, Sheet } from '../ui/kit.jsx';
 import { SORTS, groupCount, normKey, pct, place, dayKey } from './util.js';
 import { exportTable, exportParticipantPdf } from './exports.js';
+import { spreadChapters } from '../ui/spread.js';
 
 const MEDALS = ['🥇', '🥈', '🥉'];
 const ordinal = (i) => (i === 0 ? '1er' : `${i + 1}e`);
@@ -282,7 +283,7 @@ function ParticipantSheet({ p, s, v2, close, patch, toast }) {
         {msg ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{msg}</p></div> : null}
 
         {edit ? <EditForm p={p} done={(profile) => { setEdit(false); toast('Participant modifié.'); if (profile) patch({ profile }); }} /> : null}
-        {adding ? <AdminReportForm p={p} s={s} done={async (profile, isToday) => { setAdding(false); toast('Rapport enregistré.'); if (profile) patch({ profile, reports: 1, reportsToday: isToday ? 1 : 0 }); await load(); }} /> : null}
+        {adding ? <AdminReportForm p={p} s={s} done={async (profile, isToday, nRows = 1) => { setAdding(false); toast('Rapport enregistré.'); if (profile) patch({ profile, reports: nRows, reportsToday: isToday ? nRows : 0 }); await load(); }} /> : null}
 
         <h3 className="fiche-h">Rapports</h3>
         {reports === null ? <Loading /> : reports.length === 0 ? <p className="muted small">Aucun rapport pour l'instant.</p> : (
@@ -345,14 +346,30 @@ function AdminReportForm({ p, s, done }) {
   const today = dayKey(new Date(), s.challenge.timezone);
   const first = p.next ? p.next.n : (p.ordre || [1])[0];
   const remaining = (n) => { const c = byN[n]?.chapters || 1, d = (p.lect || {})[n] || 0; return d >= c ? c : c - d; };
-  const [f, setF] = useState({ portion: first, chap: remaining(first), date: today, verse: '', learned: '', application: '', question: '' });
+  const [f, setF] = useState({ portion: first, chap: remaining(first), date: today, verse: '', learned: '', application: '', question: '', nb: '' });
+  const [mode, setMode] = useState('simple');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const max = byN[f.portion]?.chapters || 1;
 
   const save = async (e) => {
-    e.preventDefault(); setErr(''); setBusy(true);
+    e.preventDefault(); setErr('');
+    if (mode === 'simple') {
+      const nb = Math.floor(Number(f.nb) || 0);
+      if (nb < 1) return setErr('Indiquez le nombre de chapitres lus.');
+      setBusy(true);
+      try {
+        const r = await rpc('admin_add_report_simple', {
+          p_participant: p.id, p_chapters: nb, p_date: f.date || null,
+          p_verse: f.verse, p_learned: f.learned, p_application: f.application, p_question: f.question,
+        });
+        if (r.error) setErr(r.error); else await done(r.profile, !f.date || f.date === today, (r.parts || []).length || 1);
+      } catch { setErr('Connexion difficile. Réessayez : le texte est conservé.'); }
+      setBusy(false);
+      return;
+    }
+    setBusy(true);
     try {
       const r = await rpc('admin_add_report', {
         p_participant: p.id, p_portion: Number(f.portion), p_chapters: Number(f.chap),
@@ -364,9 +381,34 @@ function AdminReportForm({ p, s, done }) {
     setBusy(false);
   };
   const order = p.ordre && p.ordre.length ? p.ordre : portions.map((x) => x.n);
+  const plan = spreadChapters({ order, byN, lect: p.lect || {}, chapters: f.nb });
   return (
     <form className="subform" onSubmit={save}>
-      <p className="small muted">Pour une personne qui ne peut pas envoyer son rapport elle-même. Seuls la portion, les chapitres et la date sont obligatoires.</p>
+      <p className="small muted">Pour une personne qui ne peut pas envoyer son rapport elle-même. Seuls les chapitres et la date sont obligatoires.</p>
+      {mode === 'simple' ? (
+        <>
+          <div className="grid2">
+            <Field label="Nombre de chapitres lus" hint="Répartis automatiquement dans ses portions, dans son ordre de lecture.">
+              <input type="number" min="1" inputMode="numeric" value={f.nb} onChange={set('nb')} />
+            </Field>
+            <Field label="Date de lecture"><input type="date" max={today} min={String(s.challenge.start_date || '').slice(0, 10)} value={f.date} onChange={set('date')} /></Field>
+          </div>
+          {Number(f.nb) > 0 ? (
+            <div className={`spread ${plan.overflow > 0 ? 'bad' : ''}`}>
+              {plan.overflow > 0 ? <p><b>Il ne reste que {plan.remainingTotal} chapitre(s) à lire dans le plan.</b></p> : (
+                <ul>
+                  {plan.parts.map((x) => (
+                    <li key={x.n}><span className={x.complete ? 'ok' : 'plus'}>{x.complete ? '✓' : '+'}</span>
+                      <span><b>P{x.n}</b> {x.label} : {x.chapters} ch.{x.complete ? ' (terminée)' : ` (${x.deja + x.chapters}/${x.total})`}</span></li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
+          <button type="button" className="link" onClick={() => setMode('portion')}>Choisir la portion</button>
+        </>
+      ) : (
+      <>
       <div className="grid3">
         <Field label="Portion lue">
           <select value={f.portion} onChange={(e) => { const n = Number(e.target.value); setF({ ...f, portion: n, chap: remaining(n) }); }}>
@@ -383,6 +425,9 @@ function AdminReportForm({ p, s, done }) {
         </Field>
         <Field label="Date de lecture"><input type="date" max={today} value={f.date} onChange={set('date')} /></Field>
       </div>
+      <button type="button" className="link" onClick={() => setMode('simple')}>Plus simple : nombre de chapitres seulement</button>
+      </>
+      )}
       <Field label="Verset marquant (facultatif)"><textarea className="short" value={f.verse} onChange={set('verse')} /></Field>
       <div className="grid2">
         <Field label="Ce qu'il/elle a appris (facultatif)"><textarea className="short" value={f.learned} onChange={set('learned')} /></Field>
