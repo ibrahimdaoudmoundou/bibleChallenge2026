@@ -433,6 +433,7 @@ function Signup({ info, go, onDone }) {
           <Field label="Chapitre"><input type="number" inputMode="numeric" min="1" max="150" value={f.chap} onChange={set('chap')} /></Field>
         </div>
       ) : null}
+      {f.dep === 'ici' ? <p className="small muted">Votre lecture commencera exactement à ce chapitre. Le début de la portion que vous sautez sera prévu à la fin de votre parcours : rien n'est perdu.</p> : null}
 
       <PlaceFields f={f} set={set} />
 
@@ -584,11 +585,24 @@ function Trail({ info, p, openReport }) {
   const d = p.lect[sel] || 0;
   const due = dueDay(info, p.ordre.indexOf(sel));
   const dueTxt = due ? longDate(addDays(info.start_date, due - 1)) : null;
+  const dep = p.depart || null;
+  const split = !!(dep && dep.offset > 0 && p.ordre[0] === dep.n);
+  const isSplit = split && sel === dep.n;
+  const lastDue = dueDay(info, p.ordre.length - 1);
+  const headLu = isSplit ? Math.min(d, dep.head) : 0;
+  const tailLu = isSplit ? Math.max(0, d - dep.head) : 0;
 
   return (
     <div className="page">
       <h1 className="title">Mon parcours</h1>
       <p className="muted">Les {info.portions.length} portions, dans l'ordre de ma lecture. Touchez une portion pour la voir.</p>
+      {dep ? (
+        <p className="muted small">
+          Ma lecture commence à <b>{dep.label}</b>.
+          {split ? ` La portion ${dep.n} est coupée en deux : ${dep.head_label} au début, et ${dep.tail_label} à la fin de mon parcours.` : ''}
+          {' '}Pour changer de point de départ, adressez-vous à un administrateur.
+        </p>
+      ) : null}
       <div className="trail">
         {p.ordre.map((n) => {
           const st = stateOf(n);
@@ -611,10 +625,24 @@ function Trail({ info, p, openReport }) {
       {cur ? (
         <section className="detail">
           <p className="muted small">Portion {sel}{dueTxt ? `, prévue le ${dueTxt}` : ''}</p>
-          <h2>{cur.label}</h2>
-          <p>
-            {d >= cur.chapters ? 'Portion terminée.' : d ? `${d} sur ${cur.chapters} chapitres lus.` : `${cur.chapters} chapitres, pas encore commencée.`}
-          </p>
+          {isSplit ? (
+            <>
+              <h2>{dep.head_label}</h2>
+              <p>{headLu >= dep.head ? 'Terminé.' : headLu ? `${headLu} sur ${dep.head} chapitres lus.` : `${dep.head} chapitres, pas encore commencé.`}</p>
+              <p className="muted small">
+                Le reste de cette portion, <b>{dep.tail_label}</b> ({dep.tail} chapitre{dep.tail > 1 ? 's' : ''}), est prévu à la fin de mon parcours
+                {lastDue ? `, le ${longDate(addDays(info.start_date, lastDue - 1))}` : ''}
+                {tailLu >= dep.tail ? ' : terminé.' : tailLu ? ` : ${tailLu} sur ${dep.tail} lus.` : '.'}
+              </p>
+            </>
+          ) : (
+            <>
+              <h2>{cur.label}</h2>
+              <p>
+                {d >= cur.chapters ? 'Portion terminée.' : d ? `${d} sur ${cur.chapters} chapitres lus.` : `${cur.chapters} chapitres, pas encore commencée.`}
+              </p>
+            </>
+          )}
           <button className="btn quiet" onClick={() => openReport(sel)}><Icon name="pen" /> Envoyer un rapport pour cette portion</button>
         </section>
       ) : null}
@@ -699,7 +727,7 @@ function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
   };
 
   const nbVal = Math.floor(Number(nb) || 0);
-  const plan = spreadChapters({ order: p.ordre, byN, lect: p.lect, chapters: nbVal });
+  const plan = spreadChapters({ order: p.ordre, byN, lect: p.lect, chapters: nbVal, depart: p.depart });
   const step = (k) => setNb(String(Math.max(0, nbVal + k) || ''));
 
   const submit = async (e) => {
@@ -770,11 +798,11 @@ function ReportForm({ info, p, token, preset, back, onDone, onQueued, lost }) {
                 <>
                   <p>Vos <b>{nbVal} chapitre{nbVal > 1 ? 's' : ''}</b> seront comptés ainsi :</p>
                   <ul>
-                    {plan.parts.map((x) => (
-                      <li key={x.n}>
+                    {plan.parts.map((x, i) => (
+                      <li key={i}>
                         <span className={x.complete ? 'ok' : 'plus'}>{x.complete ? '✓' : '+'}</span>
                         <span><b>P{x.n}</b> {x.label} : {x.chapters} chapitre{x.chapters > 1 ? 's' : ''}
-                          {x.complete ? ' (portion terminée)' : ` (${x.deja + x.chapters} sur ${x.total})`}</span>
+                          {x.complete ? (x.part ? ' (terminé)' : ' (portion terminée)') : ` (${x.deja + x.chapters} sur ${x.total})`}</span>
                       </li>
                     ))}
                   </ul>
