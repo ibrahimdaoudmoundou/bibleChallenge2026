@@ -8,6 +8,17 @@ import { exportTable, exportParticipantPdf } from './exports.js';
 import { spreadChapters } from '../ui/spread.js';
 
 const MEDALS = ['🥇', '🥈', '🥉'];
+
+// Liste des livres de la Bible (pour choisir un point de départ), chargée une seule fois
+let booksCache = null;
+function useBooks(slug) {
+  const [books, setBooks] = useState(booksCache || []);
+  useEffect(() => {
+    if (booksCache || !slug) return;
+    rpc('api_info', { p_slug: slug }).then((r) => { if (r && r.books) { booksCache = r.books; setBooks(r.books); } }).catch(() => {});
+  }, [slug]);
+  return books;
+}
 const ordinal = (i) => (i === 0 ? '1er' : `${i + 1}e`);
 
 export const V2Notice = () => (
@@ -231,6 +242,7 @@ function ParticipantSheet({ p, s, v2, close, patch, toast }) {
   const [reports, setReports] = useState(null);
   const [edit, setEdit] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [start, setStart] = useState(false);
   const [msg, setMsg] = useState('');
 
   const load = async () => {
@@ -238,7 +250,7 @@ function ParticipantSheet({ p, s, v2, close, patch, toast }) {
     const r = await rpc('admin_participant_reports', { p_participant: p.id });
     setReports(r.list || []);
   };
-  useEffect(() => { setReports(null); setEdit(false); setAdding(false); load().catch(() => setReports([])); // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setReports(null); setEdit(false); setAdding(false); setStart(false); load().catch(() => setReports([])); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.id]);
 
   const delReport = async (r) => {
@@ -265,14 +277,16 @@ function ParticipantSheet({ p, s, v2, close, patch, toast }) {
           <div><dt>Portions</dt><dd>{p.completes}</dd><small>terminées</small></div>
         </dl>
         <p className="small muted">
-          Prochaine lecture : {p.next ? `P${p.next.n}, ${p.next.label}` : '—'} · Inscrit le {new Date(p.created_at).toLocaleDateString('fr-FR')}
+          Prochaine lecture : {p.next ? `P${p.next.n}, ${p.next.label}` : '—'}
+          {p.depart ? ` · Départ : ${p.depart.label}${p.depart.offset > 0 ? ` (P${p.depart.n} coupée : ${p.depart.tail_label} à la fin)` : ''}` : ''} · Inscrit le {new Date(p.created_at).toLocaleDateString('fr-FR')}
           {p.previous_participations != null ? ` · Participations précédentes : ${p.previous_participations}` : ''}
           {p.added_by ? ` · Ajouté par ${p.added_by}` : ''}
         </p>
 
         <div className="fiche-actions">
-          <button className="mini" onClick={() => { setAdding(!adding); setEdit(false); }} disabled={!v2}><Icon name="pen" size={15} /> Saisir un rapport</button>
-          <button className="mini" onClick={() => { setEdit(!edit); setAdding(false); }} disabled={!v2}><Icon name="edit" size={15} /> Modifier</button>
+          <button className="mini" onClick={() => { setAdding(!adding); setEdit(false); setStart(false); }} disabled={!v2}><Icon name="pen" size={15} /> Saisir un rapport</button>
+          <button className="mini" onClick={() => { setEdit(!edit); setAdding(false); setStart(false); }} disabled={!v2}><Icon name="edit" size={15} /> Modifier</button>
+          {p.depart ? <button className="mini" onClick={() => { setStart(!start); setEdit(false); setAdding(false); }}><Icon name="book" size={15} /> Point de départ</button> : null}
           <a className="mini wa" href={waLink(p.phone, reminderText(p, s))} target="_blank" rel="noreferrer"><Icon name="send" size={15} /> WhatsApp</a>
           <button className="mini" disabled={!reports}
             onClick={() => exportParticipantPdf({ p, reports, s, statusLabel: STATUS[p.statut]?.label || p.statut }).catch(() => window.alert('Export impossible.'))}>
@@ -282,6 +296,7 @@ function ParticipantSheet({ p, s, v2, close, patch, toast }) {
         {!v2 ? <V2Notice /> : null}
         {msg ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{msg}</p></div> : null}
 
+        {start ? <StartForm p={p} s={s} done={(profile) => { setStart(false); toast('Point de départ modifié. Aucun rapport n\'a été touché.'); if (profile) patch({ profile }); }} /> : null}
         {edit ? <EditForm p={p} done={(profile) => { setEdit(false); toast('Participant modifié.'); if (profile) patch({ profile }); }} /> : null}
         {adding ? <AdminReportForm p={p} s={s} done={async (profile, isToday, nRows = 1) => { setAdding(false); toast('Rapport enregistré.'); if (profile) patch({ profile, reports: nRows, reportsToday: isToday ? nRows : 0 }); await load(); }} /> : null}
 
@@ -307,6 +322,43 @@ function ParticipantSheet({ p, s, v2, close, patch, toast }) {
         )}
       </div>
     </Sheet>
+  );
+}
+
+function StartForm({ p, s, done }) {
+  const books = useBooks(s.challenge?.slug);
+  const lab = p.depart?.label || '';
+  const m = lab.match(/^(.*?)(?: (\d+))?$/);
+  const [f, setF] = useState({ book: (m && m[1]) || '', chap: (m && m[2]) || '1' });
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const save = async (e) => {
+    e.preventDefault(); setErr('');
+    if (!f.book) return setErr('Choisissez le livre.');
+    if (!window.confirm(`Faire commencer ${p.name} à ${f.book} ${f.chap} ? Ses rapports déjà envoyés sont conservés ; seuls son ordre de lecture, ses objectifs et son retard sont recalculés.`)) return;
+    setBusy(true);
+    try {
+      const r = await rpc('admin_set_start', { p_participant: p.id, p_book: f.book, p_chap: Number(f.chap) || 1 });
+      if (r.error) setErr(r.error); else await done(r.profile);
+    } catch { setErr('Connexion difficile, ou base pas encore mise à jour (migration v2.6).'); }
+    setBusy(false);
+  };
+  return (
+    <form className="subform" onSubmit={save}>
+      <p className="small muted">Départ actuel : <b>{lab || '—'}</b>. La lecture commence exactement à ce chapitre ; le début de la portion sauté est prévu à la fin du parcours. Aucun rapport n'est modifié.</p>
+      <div className="grid2">
+        <Field label="Livre">
+          <select value={f.book} onChange={set('book')}>
+            {!books.includes(f.book) ? <option value={f.book}>{f.book || 'Choisir…'}</option> : null}
+            {books.map((b) => <option key={b}>{b}</option>)}
+          </select>
+        </Field>
+        <Field label="Chapitre"><input type="number" min="1" max="150" inputMode="numeric" value={f.chap} onChange={set('chap')} /></Field>
+      </div>
+      {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}
+      <button className="btn primary fit" disabled={busy}>{busy ? 'Enregistrement…' : 'Changer le point de départ'}</button>
+    </form>
   );
 }
 
@@ -381,7 +433,7 @@ function AdminReportForm({ p, s, done }) {
     setBusy(false);
   };
   const order = p.ordre && p.ordre.length ? p.ordre : portions.map((x) => x.n);
-  const plan = spreadChapters({ order, byN, lect: p.lect || {}, chapters: f.nb });
+  const plan = spreadChapters({ order, byN, lect: p.lect || {}, chapters: f.nb, depart: p.depart });
   return (
     <form className="subform" onSubmit={save}>
       <p className="small muted">Pour une personne qui ne peut pas envoyer son rapport elle-même. Seuls les chapitres et la date sont obligatoires.</p>
@@ -397,8 +449,8 @@ function AdminReportForm({ p, s, done }) {
             <div className={`spread ${plan.overflow > 0 ? 'bad' : ''}`}>
               {plan.overflow > 0 ? <p><b>Il ne reste que {plan.remainingTotal} chapitre(s) à lire dans le plan.</b></p> : (
                 <ul>
-                  {plan.parts.map((x) => (
-                    <li key={x.n}><span className={x.complete ? 'ok' : 'plus'}>{x.complete ? '✓' : '+'}</span>
+                  {plan.parts.map((x, i) => (
+                    <li key={i}><span className={x.complete ? 'ok' : 'plus'}>{x.complete ? '✓' : '+'}</span>
                       <span><b>P{x.n}</b> {x.label} : {x.chapters} ch.{x.complete ? ' (terminée)' : ` (${x.deja + x.chapters}/${x.total})`}</span></li>
                   ))}
                 </ul>
@@ -442,6 +494,7 @@ function AdminReportForm({ p, s, done }) {
 /* ------------------------------------------------------------------ ajout d'un participant */
 function AddParticipant({ open, s, close, patch, toast, done }) {
   const empty = { name: '', phone: '', country: '', city: '', previous: '', start: 'at', book: '', chap: 1 };
+  const books = useBooks(s.challenge?.slug);
   const [f, setF] = useState(empty);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -451,6 +504,7 @@ function AddParticipant({ open, s, close, patch, toast, done }) {
     if (f.name.trim().length < 3) return setErr('Indiquez le nom et le prénom.');
     if (f.phone.replace(/\D/g, '').length < 8) return setErr('Le numéro WhatsApp est obligatoire (8 chiffres au moins).');
     if (!f.country.trim() || !f.city.trim()) return setErr('Le pays et la ville sont obligatoires.');
+    if (f.start === 'ici' && !f.book) return setErr('Choisissez le livre de départ.');
     setBusy(true);
     try {
       const r = await rpc('admin_add_participant', { p_cid: s.challenge.id, p: { ...f, previous: String(f.previous), chap: String(f.chap) } });
@@ -479,8 +533,13 @@ function AddParticipant({ open, s, close, patch, toast, done }) {
         </div>
         {f.start === 'ici' ? (
           <div className="grid2">
-            <Field label="Livre"><input value={f.book} onChange={set('book')} placeholder="Ex. Psaumes" /></Field>
-            <Field label="Chapitre"><input type="number" min="1" value={f.chap} onChange={set('chap')} /></Field>
+            <Field label="Livre">
+              <select value={f.book} onChange={set('book')}>
+                <option value="">Choisir…</option>
+                {books.map((b) => <option key={b}>{b}</option>)}
+              </select>
+            </Field>
+            <Field label="Chapitre" hint="La lecture commencera exactement à ce chapitre."><input type="number" min="1" value={f.chap} onChange={set('chap')} /></Field>
           </div>
         ) : null}
         {err ? <div className="notice bad" role="alert"><Icon name="help" /> <p>{err}</p></div> : null}

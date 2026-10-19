@@ -53,6 +53,7 @@ export const ACTIONS = {
   participant_modifie: 'A modifié un participant',
   participant_supprime: 'A supprimé un participant',
   rapport_saisi: 'A saisi un rapport',
+  depart_modifie: 'A changé le point de départ',
   rapport_supprime: 'A supprimé un rapport',
   code_secret_efface: 'A effacé un code secret',
   question_traitee: 'A marqué une question comme traitée',
@@ -66,7 +67,7 @@ export const ACTIONS = {
 };
 
 const DETAIL_LABELS = {
-  participant: 'Participant', portion: 'Portion', chapitres: 'Chapitres', date: 'Date de lecture', du: 'Rapport du',
+  participant: 'Participant', avant: 'Ancien départ', apres: 'Nouveau départ', portion: 'Portion', chapitres: 'Chapitres', date: 'Date de lecture', du: 'Rapport du',
   telephone: 'Téléphone', rapports: 'Rapports supprimés', texte: 'Texte', photo: 'Photo', session: 'Session', depuis: 'Copiée depuis',
 };
 
