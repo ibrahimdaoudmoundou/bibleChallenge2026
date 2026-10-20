@@ -10,6 +10,17 @@ import {
   morningText, eveningText, reminderText, needsReminder, waLink, waShare, STATUT_LABELS,
 } from "../shared/messages.js";
 
+// Rapport PDF joint : chargé à la demande ; en cas de souci, l'e-mail part quand même (sans pièce jointe).
+async function reportAttachment(s, moment) {
+  try {
+    const { buildReportPdf } = await import("../shared/reportPdf.js");
+    return [buildReportPdf(s, moment)];
+  } catch (e) {
+    console.error("PDF du rapport impossible :", e);
+    return [];
+  }
+}
+
 const esc = (s) =>
   String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#39;").replace(/\n/g, "<br>");
 
@@ -74,16 +85,19 @@ export default async function handler(req, res) {
       const c = s.challenge, jour = s.jour, total = c.total_days;
       const origin = `https://${req.headers["x-forwarded-host"] || req.headers.host}`;
       if (!c.platform_url) c.platform_url = `${origin}/${c.slug}`;
-      if (c.plan_url && c.plan_url.startsWith("/")) c.plan_url = origin + c.plan_url;
+      // Les e-mails des administrateurs portent le rapport de lecture du jour (PDF joint), plus le lien du plan.
+      c.plan_url = "";
       const dest = recipients(c, to);
       if (!dest.length) continue;
       let mails = [];
       if (task === "morning") {
         if (!force && (jour < -6 || jour > total)) continue;
-        mails = [{ subject: `☀️ ${c.name} — Jour ${jour} : annonce du matin à publier`, html: whatsappMail(morningText(s), c) }];
+        mails = [{ subject: `☀️ ${c.name} — Jour ${jour} : annonce du matin à publier`, html: whatsappMail(morningText(s), c),
+          attachments: jour >= 1 ? await reportAttachment(s, "morning") : [] }];
       } else if (task === "evening") {
         if (!force && (jour < 1 || jour > total)) continue;
-        mails = [{ subject: `🌙 ${c.name} — Jour ${jour} : bilan du soir à publier`, html: whatsappMail(eveningText(s), c) }];
+        mails = [{ subject: `🌙 ${c.name} — Jour ${jour} : bilan du soir à publier`, html: whatsappMail(eveningText(s), c),
+          attachments: await reportAttachment(s, "evening") }];
       } else if (task === "reminders") {
         if (!force && (jour < 2 || jour > total + 3)) continue;
         mails = remindersMails(s, c).map((m) => ({ ...m, subject: `${c.name} — ${m.subject}` }));
@@ -91,7 +105,10 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Tâche inconnue" });
       }
       for (const m of mails) {
-        await transport.sendMail({ from, to: dest.join(", "), subject: m.subject, html: m.html });
+        await transport.sendMail({ from, to: dest.join(", "), subject: m.subject, html: (m.attachments || []).length
+          ? m.html.replace(/<\/div>$/, "<p style='color:#2a3f8f'>📎 En pièce jointe : le rapport de lecture du jour (tous les participants et leur avancement).</p></div>")
+          : m.html,
+          attachments: m.attachments || [] });
         sent.push({ session: c.slug, subject: m.subject, to: dest.length });
       }
     }
